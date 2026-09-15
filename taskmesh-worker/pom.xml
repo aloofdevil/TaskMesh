@@ -32,6 +32,15 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
+		<!--
+			The worker's only outbound channel. spring-boot-starter-webmvc is
+			server-side only; in Spring Boot 4 the RestClient auto-configuration
+			(and its RestClient.Builder bean) lives in this separate starter.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-restclient</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>

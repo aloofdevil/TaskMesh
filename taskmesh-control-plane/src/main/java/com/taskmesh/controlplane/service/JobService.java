@@ -58,9 +58,13 @@ public class JobService {
 
         short priority = (short) (request.priority() != null ? request.priority() : CreateJobRequest.DEFAULT_PRIORITY);
         int maxAttempts = request.maxAttempts() != null ? request.maxAttempts() : CreateJobRequest.DEFAULT_MAX_ATTEMPTS;
+        // "As soon as possible" has to mean "now" on the database's clock,
+        // because the database is what decides eligibility - see
+        // JobRepository.databaseTime().
+        Instant scheduledAt = request.scheduledAt() != null ? request.scheduledAt() : jobRepository.databaseTime();
 
         Job job = Job.createQueued(request.idempotencyKey(), payloadHash, request.type(), request.payload(),
-                priority, maxAttempts, request.scheduledAt());
+                priority, maxAttempts, scheduledAt);
 
         try {
             return new JobCreationResult(jobRepository.saveAndFlush(job), true);

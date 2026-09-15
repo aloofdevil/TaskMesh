@@ -1,0 +1,25 @@
+package com.taskmesh.worker;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+/**
+ * Worker configuration. Every value is environment-driven (see
+ * {@code application.yml}) - notably the control plane URL, which is never
+ * hardcoded so the same image runs under Docker Compose and Kubernetes.
+ *
+ * @param enabled            whether the register/heartbeat/poll loop runs at all; disabled in tests
+ * @param controlPlaneUrl    base URL of the control plane
+ * @param id                 this worker's id; generated from the hostname when blank
+ * @param capacity           how many jobs this worker advertises it can run
+ * @param pollIntervalMs     delay between claim attempts
+ * @param heartbeatIntervalMs delay between heartbeats
+ */
+@ConfigurationProperties(prefix = "taskmesh.worker")
+public record WorkerProperties(
+        boolean enabled,
+        String controlPlaneUrl,
+        String id,
+        int capacity,
+        long pollIntervalMs,
+        long heartbeatIntervalMs) {
+}

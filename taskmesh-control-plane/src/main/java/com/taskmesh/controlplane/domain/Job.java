@@ -2,6 +2,7 @@ package com.taskmesh.controlplane.domain;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -17,13 +18,15 @@ import jakarta.persistence.Version;
 
 /**
  * A job, as persisted in the {@code jobs} table created by
- * {@code V1__init.sql}. This is a Day 2 mapping, not a full mapping of the
- * table: {@code assigned_worker_id}, {@code current_execution_id},
- * {@code lease_until}, {@code last_failure_reason}, {@code result},
- * {@code started_at} and {@code completed_at} exist in the schema for later
- * days (worker claiming, leases, retries) and are intentionally left
- * unmapped here - Hibernate's schema validator only checks the columns an
- * entity actually maps, so the future-use columns are untouched by Day 2.
+ * {@code V1__init.sql}. This is not a full mapping of the table:
+ * {@code lease_until}, {@code last_failure_reason}, {@code result} and
+ * {@code completed_at} exist in the schema for later days (leases, retries,
+ * result reporting) and are intentionally left unmapped - Hibernate's
+ * schema validator only checks the columns an entity actually maps, so
+ * those future-use columns stay untouched.
+ * <p>
+ * Day 3 added {@code assigned_worker_id}, {@code current_execution_id} and
+ * {@code started_at}, which claiming writes.
  */
 @Entity
 @Table(name = "jobs")
@@ -62,8 +65,22 @@ public class Job {
     @Column(name = "scheduled_at", nullable = false, updatable = false)
     private Instant scheduledAt;
 
+    @Column(name = "assigned_worker_id")
+    private String assignedWorkerId;
+
+    /**
+     * Identifies the currently running attempt. Day 3 mints it on claim;
+     * the fencing rules that reject writes carrying a stale execution id
+     * are Day 4.
+     */
+    @Column(name = "current_execution_id")
+    private UUID currentExecutionId;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    @Column(name = "started_at")
+    private Instant startedAt;
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -92,6 +109,11 @@ public class Job {
 
     private Job(UUID id, String idempotencyKey, String payloadHash, String type, Map<String, Object> payload,
             short priority, int maxAttempts, Instant scheduledAt) {
+        // createdAt/updatedAt are audit timestamps that nothing compares
+        // against the database clock, so the JVM clock is fine for them.
+        // scheduledAt is different: the claim query tests it against
+        // PostgreSQL's now(), so the caller must supply a value from that
+        // same clock rather than letting this constructor invent one.
         Instant now = Instant.now();
         this.id = id;
         this.idempotencyKey = idempotencyKey;
@@ -102,20 +124,47 @@ public class Job {
         this.status = JobStatus.QUEUED;
         this.attemptCount = 0;
         this.maxAttempts = maxAttempts;
-        this.scheduledAt = scheduledAt != null ? scheduledAt : now;
+        this.scheduledAt = Objects.requireNonNull(scheduledAt, "scheduledAt");
         this.createdAt = now;
         this.updatedAt = now;
     }
 
     /**
-     * Creates a new job in {@link JobStatus#QUEUED}. This is the only
-     * creation path in Day 2 - jobs are never constructed in any other
-     * status.
+     * Creates a new job in {@link JobStatus#QUEUED} - the only status a job
+     * is ever constructed in.
+     *
+     * @param scheduledAt when the job becomes claimable; must come from the
+     *                    database clock (see {@code JobRepository.databaseTime()})
      */
     public static Job createQueued(String idempotencyKey, String payloadHash, String type,
             Map<String, Object> payload, short priority, int maxAttempts, Instant scheduledAt) {
         return new Job(UUID.randomUUID(), idempotencyKey, payloadHash, type, payload, priority, maxAttempts,
                 scheduledAt);
+    }
+
+    /**
+     * Transitions {@code QUEUED -> RUNNING} for a worker that has just won
+     * the claim. Only ever called on a row the claiming transaction already
+     * holds a lock on (see {@code JobRepository.lockNextClaimableJobs}), so
+     * the status check here is a domain invariant guarding against misuse,
+     * not the concurrency control - the row lock is.
+     * <p>
+     * {@code startedAt} records the first time the job ever started, so it
+     * is not overwritten by later attempts.
+     */
+    public void claimedBy(String workerId, UUID executionId) {
+        if (status != JobStatus.QUEUED) {
+            throw new IllegalStateException("Job " + id + " cannot be claimed because it is " + status);
+        }
+        Instant now = Instant.now();
+        this.status = JobStatus.RUNNING;
+        this.assignedWorkerId = workerId;
+        this.currentExecutionId = executionId;
+        this.attemptCount = this.attemptCount + 1;
+        if (this.startedAt == null) {
+            this.startedAt = now;
+        }
+        this.updatedAt = now;
     }
 
     public UUID getId() {
@@ -158,8 +207,20 @@ public class Job {
         return scheduledAt;
     }
 
+    public String getAssignedWorkerId() {
+        return assignedWorkerId;
+    }
+
+    public UUID getCurrentExecutionId() {
+        return currentExecutionId;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public Instant getStartedAt() {
+        return startedAt;
     }
 
     public Instant getUpdatedAt() {

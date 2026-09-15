@@ -15,6 +15,8 @@ import com.taskmesh.controlplane.api.dto.ErrorResponse;
 import com.taskmesh.controlplane.service.IdempotencyKeyConflictException;
 import com.taskmesh.controlplane.service.JobNotCancellableException;
 import com.taskmesh.controlplane.service.JobNotFoundException;
+import com.taskmesh.controlplane.service.WorkerNotActiveException;
+import com.taskmesh.controlplane.service.WorkerNotFoundException;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -33,6 +35,16 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(JobNotCancellableException.class)
     public ResponseEntity<ErrorResponse> handleNotCancellable(JobNotCancellableException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(WorkerNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleWorkerNotFound(WorkerNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(WorkerNotActiveException.class)
+    public ResponseEntity<ErrorResponse> handleWorkerNotActive(WorkerNotActiveException ex, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request);
     }
 

@@ -78,5 +78,23 @@ services:
       kafka:
         condition: service_healthy
 
+  # Started only on request: `docker compose --profile worker up -d`.
+  # Kept out of the default stack so `docker compose up -d` still brings up
+  # exactly the infrastructure + control plane it did before, and so a
+  # polling worker does not consume jobs during manual API verification.
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    profiles: ["worker"]
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:8080
+      WORKER_CAPACITY: 2
+      WORKER_POLL_INTERVAL_MS: 1000
+      WORKER_HEARTBEAT_INTERVAL_MS: 5000
+    depends_on:
+      control-plane:
+        condition: service_started
+
 volumes:
   taskmesh-postgres-data:

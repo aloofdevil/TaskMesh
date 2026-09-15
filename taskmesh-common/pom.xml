@@ -16,10 +16,16 @@
 	<description>Shared DTOs, enums and event schemas used by both the control plane and workers</description>
 
 	<!--
-		No dependencies yet: this module is a placeholder for Day 2, when job/worker
-		DTOs and shared enums (JobStatus, event payloads) that both the control plane
-		and worker need are introduced. Kept empty rather than pre-adding libraries
-		that nothing uses yet.
+		Holds the wire contract for the internal worker API, so the control
+		plane (server side) and the worker (client side) cannot drift apart.
+		Only the Bean Validation API is needed: these are plain records, and
+		Jackson serializes them without annotations.
 	-->
+	<dependencies>
+		<dependency>
+			<groupId>jakarta.validation</groupId>
+			<artifactId>jakarta.validation-api</artifactId>
+		</dependency>
+	</dependencies>
 
 </project>

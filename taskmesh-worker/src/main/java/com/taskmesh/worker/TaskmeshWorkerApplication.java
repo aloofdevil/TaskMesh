@@ -2,17 +2,19 @@ package com.taskmesh.worker;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point for the TaskMesh worker process.
  * <p>
- * Skeleton only as of Day 1: the application starts and exposes actuator
- * health, but does not yet register with the control plane, claim jobs, or
- * execute anything. See docs/architecture.md for the intended lifecycle
- * (register -&gt; heartbeat -&gt; claim -&gt; execute -&gt; report), implemented from
- * Day 3 onward.
+ * As of Day 3 the worker registers with the control plane, heartbeats, and
+ * polls it for work (see {@link WorkerRuntime}). Executing the claimed
+ * payload and reporting the result back is Day 4.
  */
 @SpringBootApplication
+@EnableScheduling
+@EnableConfigurationProperties(WorkerProperties.class)
 public class TaskmeshWorkerApplication {
 
 	public static void main(String[] args) {
