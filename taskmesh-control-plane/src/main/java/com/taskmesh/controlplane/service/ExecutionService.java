@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.taskmesh.common.worker.LeaseResponse;
 import com.taskmesh.controlplane.domain.Job;
+import com.taskmesh.controlplane.domain.JobEventType;
 import com.taskmesh.controlplane.repository.JobAttemptRepository;
 import com.taskmesh.controlplane.repository.JobRepository;
 
@@ -30,12 +31,16 @@ public class ExecutionService {
     private final JobRepository jobRepository;
     private final JobAttemptRepository jobAttemptRepository;
     private final ReliabilityProperties properties;
+    private final RetryPolicy retryPolicy;
+    private final JobEventRecorder eventRecorder;
 
     public ExecutionService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            ReliabilityProperties properties) {
+            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.properties = properties;
+        this.retryPolicy = retryPolicy;
+        this.eventRecorder = eventRecorder;
     }
 
     @Transactional
@@ -61,22 +66,54 @@ public class ExecutionService {
             throw staleOrMissing(jobId, executionId);
         }
         jobAttemptRepository.markSucceeded(executionId);
+        // Written in this same transaction: if the commit succeeds the event
+        // exists, and if it rolls back neither does.
+        eventRecorder.recordJobEvent(JobEventType.JOB_COMPLETED, requireJob(jobId));
         log.info("Job {} completed by worker {} (execution {})", jobId, workerId, executionId);
     }
 
     /**
-     * Records a failed execution and releases the job back to the queue.
-     * Day 4 requeues unconditionally; the retry budget, backoff and
-     * dead-lettering are Day 5.
+     * Records a failed execution and applies the retry policy: another
+     * attempt after a backoff, or dead-letter once the budget is spent.
+     * <p>
+     * The job's state is read only to choose the branch and size the
+     * backoff. The write itself is still the fenced conditional UPDATE, and
+     * it re-checks the attempt budget in its own WHERE clause, so a stale
+     * execution cannot schedule a retry, dead-letter a job, or consume an
+     * attempt - it changes nothing and is told it is stale.
      */
     @Transactional
     public void fail(UUID jobId, String workerId, UUID executionId, String failureReason) {
-        int failed = jobRepository.failIfOwnedByExecution(jobId, workerId, executionId, failureReason);
-        if (failed == 0) {
+        Job job = requireJob(jobId);
+        boolean retryable = retryPolicy.hasAttemptsRemaining(job.getAttemptCount(), job.getMaxAttempts());
+
+        int updated;
+        if (retryable) {
+            long backoffSeconds = retryPolicy.backoffAfterAttempt(job.getAttemptCount()).toSeconds();
+            updated = jobRepository.scheduleRetryIfOwnedByExecution(
+                    jobId, workerId, executionId, failureReason, backoffSeconds);
+        } else {
+            updated = jobRepository.deadLetterIfOwnedByExecution(jobId, workerId, executionId, failureReason);
+        }
+        if (updated == 0) {
             throw staleOrMissing(jobId, executionId);
         }
+
         jobAttemptRepository.markFailed(executionId, failureReason);
-        log.info("Job {} failed on worker {} (execution {}): {}", jobId, workerId, executionId, failureReason);
+        Job afterFailure = requireJob(jobId);
+        eventRecorder.recordJobEvent(
+                retryable ? JobEventType.JOB_RETRYING : JobEventType.JOB_DEAD_LETTER, afterFailure);
+
+        if (retryable) {
+            log.info("Job {} failed on worker {} (attempt {}/{}); retrying at {}: {}", jobId, workerId,
+                    job.getAttemptCount(), job.getMaxAttempts(), afterFailure.getScheduledAt(), failureReason);
+        } else {
+            log.warn("Job {} dead-lettered after {} attempt(s): {}", jobId, job.getAttemptCount(), failureReason);
+        }
+    }
+
+    private Job requireJob(UUID jobId) {
+        return jobRepository.findById(jobId).orElseThrow(() -> new JobNotFoundException(jobId));
     }
 
     /**

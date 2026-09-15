@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.taskmesh.common.worker.ClaimedJob;
 import com.taskmesh.controlplane.domain.Job;
 import com.taskmesh.controlplane.domain.JobAttempt;
+import com.taskmesh.controlplane.domain.JobEventType;
 import com.taskmesh.controlplane.repository.JobAttemptRepository;
 import com.taskmesh.controlplane.repository.JobRepository;
 
@@ -30,13 +31,15 @@ public class DispatchService {
     private final JobAttemptRepository jobAttemptRepository;
     private final WorkerService workerService;
     private final ReliabilityProperties properties;
+    private final JobEventRecorder eventRecorder;
 
     public DispatchService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            WorkerService workerService, ReliabilityProperties properties) {
+            WorkerService workerService, ReliabilityProperties properties, JobEventRecorder eventRecorder) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.workerService = workerService;
         this.properties = properties;
+        this.eventRecorder = eventRecorder;
     }
 
     /**
@@ -81,6 +84,9 @@ public class DispatchService {
         job.claimedBy(workerId, executionId, leaseUntil);
 
         jobAttemptRepository.save(JobAttempt.start(job.getId(), job.getAttemptCount(), executionId, workerId));
+        // Same transaction as the claim itself, so a job that is RUNNING
+        // always has the event that says so.
+        eventRecorder.recordJobEvent(JobEventType.JOB_RUNNING, job);
 
         log.info("Job {} claimed by worker {} (attempt {}, execution {}, lease until {})", job.getId(), workerId,
                 job.getAttemptCount(), executionId, leaseUntil);

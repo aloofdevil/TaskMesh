@@ -116,6 +116,17 @@ class ExecutionReliabilityTests {
         jdbcTemplate.update("UPDATE jobs SET lease_until = now() - interval '1 second' WHERE id = ?", jobId);
     }
 
+    /**
+     * Brings a job's retry backoff forward and promotes it, so a test can
+     * reach the next attempt without waiting out a real delay. Day 5 sends
+     * failed and lease-expired jobs to RETRYING rather than straight back
+     * to QUEUED, so reassignment now goes through this step.
+     */
+    private void makeRetryClaimable(UUID jobId) {
+        jdbcTemplate.update("UPDATE jobs SET scheduled_at = now() - interval '1 second' WHERE id = ?", jobId);
+        leaseReaper.promoteDueRetries();
+    }
+
     private Job job(UUID jobId) {
         return jobRepository.findById(jobId).orElseThrow();
     }
@@ -271,7 +282,7 @@ class ExecutionReliabilityTests {
     // ---------- failure ----------
 
     @Test
-    void owningExecutionCanReportFailureAndJobReturnsToTheQueue() {
+    void owningExecutionCanReportFailureAndJobIsScheduledForRetry() {
         String workerId = registerWorker();
         UUID jobId = createJob("failing");
         ClaimedJob claimed = dispatchService.claim(workerId).orElseThrow();
@@ -279,7 +290,10 @@ class ExecutionReliabilityTests {
         executionService.fail(jobId, workerId, claimed.executionId(), "boom");
 
         Job failed = job(jobId);
-        assertThat(failed.getStatus()).isEqualTo(JobStatus.QUEUED);
+        // Day 5: a failure with attempts remaining waits out a backoff in
+        // RETRYING instead of becoming immediately claimable again.
+        assertThat(failed.getStatus()).isEqualTo(JobStatus.RETRYING);
+        assertThat(failed.getScheduledAt()).isAfter(Instant.now());
         assertThat(failed.getAssignedWorkerId()).isNull();
         assertThat(failed.getCurrentExecutionId()).isNull();
         assertThat(failed.getLeaseUntil()).isNull();
@@ -331,10 +345,14 @@ class ExecutionReliabilityTests {
         leaseReaper.reapExpiredLeases();
 
         Job requeued = job(jobId);
-        assertThat(requeued.getStatus()).isEqualTo(JobStatus.QUEUED);
+        assertThat(requeued.getStatus()).isEqualTo(JobStatus.RETRYING);
         assertThat(requeued.getAssignedWorkerId()).isNull();
         assertThat(requeued.getCurrentExecutionId()).isNull();
         assertThat(requeued.getLeaseUntil()).isNull();
+
+        // Claimable again once the backoff has elapsed.
+        makeRetryClaimable(jobId);
+        assertThat(job(jobId).getStatus()).isEqualTo(JobStatus.QUEUED);
     }
 
     @Test
@@ -378,6 +396,7 @@ class ExecutionReliabilityTests {
         ClaimedJob first = dispatchService.claim(crashedWorker).orElseThrow();
         expireLease(jobId);
         leaseReaper.reapExpiredLeases();
+        makeRetryClaimable(jobId);
 
         // Another worker picks the job up, with a brand-new execution id.
         ClaimedJob second = dispatchService.claim(rescuerWorker).orElseThrow();
@@ -415,6 +434,7 @@ class ExecutionReliabilityTests {
         dispatchService.claim(firstHolder).orElseThrow();
         expireLease(jobId);
         leaseReaper.reapExpiredLeases();
+        makeRetryClaimable(jobId);
 
         int contenders = 8;
         List<String> workerIds = new ArrayList<>();
@@ -500,9 +520,9 @@ class ExecutionReliabilityTests {
                 assertThat(finalAttempt.getStatus()).isEqualTo(JobAttemptStatus.SUCCEEDED);
                 assertThat(finalJob.getCurrentExecutionId()).isEqualTo(claimed.executionId());
             } else {
-                // The reaper won: the job went back to the queue and the
-                // completion changed nothing.
-                assertThat(finalJob.getStatus()).isEqualTo(JobStatus.QUEUED);
+                // The reaper won: the job was scheduled for another attempt
+                // and the completion changed nothing.
+                assertThat(finalJob.getStatus()).isEqualTo(JobStatus.RETRYING);
                 assertThat(finalAttempt.getStatus()).isEqualTo(JobAttemptStatus.LEASE_EXPIRED);
                 assertThat(finalJob.getCurrentExecutionId()).isNull();
             }
@@ -545,7 +565,7 @@ class ExecutionReliabilityTests {
         pool.shutdown();
 
         assertThat(renewalSucceeded.get()).isFalse();
-        assertThat(job(jobId).getStatus()).isEqualTo(JobStatus.QUEUED);
+        assertThat(job(jobId).getStatus()).isEqualTo(JobStatus.RETRYING);
         assertThat(attempt(claimed.executionId()).getStatus()).isEqualTo(JobAttemptStatus.LEASE_EXPIRED);
     }
 

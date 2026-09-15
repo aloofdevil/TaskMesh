@@ -1,6 +1,7 @@
 package com.taskmesh.controlplane.service;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.taskmesh.controlplane.domain.Job;
+import com.taskmesh.controlplane.domain.JobEventType;
 import com.taskmesh.controlplane.repository.JobAttemptRepository;
 import com.taskmesh.controlplane.repository.JobRepository;
 
@@ -24,15 +26,21 @@ public class LeaseReaperService {
 
     private static final Logger log = LoggerFactory.getLogger(LeaseReaperService.class);
 
+    private static final String LEASE_EXPIRED_REASON = "Lease expired; worker stopped renewing";
+
     private final JobRepository jobRepository;
     private final JobAttemptRepository jobAttemptRepository;
     private final ReliabilityProperties properties;
+    private final RetryPolicy retryPolicy;
+    private final JobEventRecorder eventRecorder;
 
     public LeaseReaperService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            ReliabilityProperties properties) {
+            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.properties = properties;
+        this.retryPolicy = retryPolicy;
+        this.eventRecorder = eventRecorder;
     }
 
     /**
@@ -61,20 +69,90 @@ public class LeaseReaperService {
             return 0;
         }
 
-        List<UUID> jobIds = expired.stream().map(Job::getId).toList();
         List<UUID> executionIds = expired.stream()
                 .map(Job::getCurrentExecutionId)
-                .filter(java.util.Objects::nonNull)
+                .filter(Objects::nonNull)
                 .toList();
-
         if (!executionIds.isEmpty()) {
             jobAttemptRepository.markLeaseExpired(executionIds);
         }
-        int requeued = jobRepository.requeueAfterLeaseExpiry(jobIds);
 
-        expired.forEach(job -> log.warn("Lease expired for job {} held by worker {} (execution {}); requeued",
-                job.getId(), job.getAssignedWorkerId(), job.getCurrentExecutionId()));
+        int recovered = 0;
+        for (Job job : expired) {
+            recovered += recoverExpiredJob(job);
+        }
+        return recovered;
+    }
 
-        return requeued;
+    /**
+     * Applies the same retry policy to an abandoned execution as to a
+     * reported failure. An expired lease has still consumed an attempt - the
+     * count was incremented when the job was claimed - so a job whose worker
+     * keeps dying must eventually dead-letter rather than be re-dispatched
+     * forever.
+     * <p>
+     * Each job is handled with its own conditional statement rather than one
+     * bulk update, because the branch and the backoff both depend on that
+     * job's own attempt count, and the policy that decides them lives in
+     * {@link RetryPolicy} rather than being duplicated in SQL. The batch is
+     * bounded, so this stays a small number of statements per sweep.
+     */
+    private int recoverExpiredJob(Job job) {
+        boolean retryable = retryPolicy.hasAttemptsRemaining(job.getAttemptCount(), job.getMaxAttempts());
+
+        int updated;
+        if (retryable) {
+            long backoffSeconds = retryPolicy.backoffAfterAttempt(job.getAttemptCount()).toSeconds();
+            updated = jobRepository.scheduleRetryAfterLeaseExpiry(job.getId(), LEASE_EXPIRED_REASON, backoffSeconds);
+        } else {
+            updated = jobRepository.deadLetterAfterLeaseExpiry(job.getId(), LEASE_EXPIRED_REASON);
+        }
+        if (updated == 0) {
+            // Something else got there first - most likely the worker's own
+            // completion committing just before this sweep. Leave it alone.
+            return 0;
+        }
+
+        Job afterRecovery = jobRepository.findById(job.getId()).orElseThrow();
+        eventRecorder.recordJobEvent(
+                retryable ? JobEventType.JOB_RETRYING : JobEventType.JOB_DEAD_LETTER, afterRecovery);
+
+        if (retryable) {
+            log.warn("Lease expired for job {} held by worker {} (execution {}); retrying at {}",
+                    job.getId(), job.getAssignedWorkerId(), job.getCurrentExecutionId(),
+                    afterRecovery.getScheduledAt());
+        } else {
+            log.warn("Lease expired for job {} held by worker {} after {} attempt(s); dead-lettered",
+                    job.getId(), job.getAssignedWorkerId(), job.getAttemptCount());
+        }
+        return 1;
+    }
+
+    /**
+     * Promotes jobs whose retry backoff has elapsed from RETRYING to
+     * QUEUED, making them claimable again.
+     * <p>
+     * This runs in the same sweep as lease reaping rather than on a
+     * scheduler of its own. Both are liveness duties of the control plane,
+     * and folding promotion into a loop that must already be alive avoids
+     * adding a second component whose silent death would strand jobs -
+     * here, a stalled sweep is a single failure that is already visible
+     * because leases would stop being recovered too.
+     */
+    @Transactional
+    public int promoteDueRetries() {
+        List<Job> due = jobRepository.lockDueRetries(properties.reaperBatchSize());
+        if (due.isEmpty()) {
+            return 0;
+        }
+
+        int promoted = jobRepository.promoteDueRetries(due.stream().map(Job::getId).toList());
+        due.forEach(job -> {
+            Job afterPromotion = jobRepository.findById(job.getId()).orElseThrow();
+            eventRecorder.recordJobEvent(JobEventType.JOB_QUEUED, afterPromotion);
+            log.info("Job {} backoff elapsed; returned to the queue for attempt {}",
+                    job.getId(), job.getAttemptCount() + 1);
+        });
+        return promoted;
     }
 }

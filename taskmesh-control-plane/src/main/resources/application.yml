@@ -28,8 +28,33 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        # Fail fast when no broker is reachable. The default (60s) would
+        # stall the outbox publisher thread for a minute per attempt during
+        # an outage; the events are durable in PostgreSQL either way, so
+        # giving up quickly and retrying on the next poll is better.
+        max.block.ms: 5000
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 4000
 
 taskmesh:
+  retry:
+    # 1s, then 2s, then 4s ... doubling per consumed attempt, capped.
+    initial-backoff: ${RETRY_INITIAL_BACKOFF:1s}
+    max-backoff: ${RETRY_MAX_BACKOFF:60s}
+
+  outbox:
+    publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+    poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+    batch-size: ${OUTBOX_BATCH_SIZE:100}
+    send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:5000}
+    job-events-topic: ${JOB_EVENTS_TOPIC:taskmesh.job-events}
+    worker-events-topic: ${WORKER_EVENTS_TOPIC:taskmesh.worker-events}
+
   reliability:
     # 30s lease against the worker's 10s renewal interval: three chances to
     # renew before a job is considered abandoned.

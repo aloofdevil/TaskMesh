@@ -6,10 +6,13 @@ import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.taskmesh.controlplane.api.dto.CreateJobRequest;
 import com.taskmesh.controlplane.domain.Job;
+import com.taskmesh.controlplane.domain.JobEventType;
 import com.taskmesh.controlplane.repository.JobRepository;
 
 @Service
@@ -17,10 +20,15 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final PayloadHasher payloadHasher;
+    private final JobEventRecorder eventRecorder;
+    private final TransactionTemplate transactionTemplate;
 
-    public JobService(JobRepository jobRepository, PayloadHasher payloadHasher) {
+    public JobService(JobRepository jobRepository, PayloadHasher payloadHasher, JobEventRecorder eventRecorder,
+            PlatformTransactionManager transactionManager) {
         this.jobRepository = jobRepository;
         this.payloadHasher = payloadHasher;
+        this.eventRecorder = eventRecorder;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
@@ -67,11 +75,32 @@ public class JobService {
                 priority, maxAttempts, scheduledAt);
 
         try {
-            return new JobCreationResult(jobRepository.saveAndFlush(job), true);
+            return new JobCreationResult(insertWithQueuedEvent(job), true);
         } catch (DataIntegrityViolationException raceLost) {
             Job winner = jobRepository.findByIdempotencyKey(request.idempotencyKey()).orElseThrow(() -> raceLost);
             return new JobCreationResult(matchOrThrow(winner, payloadHash), false);
         }
+    }
+
+    /**
+     * Inserts the job and its JOB_QUEUED outbox event as one unit.
+     * <p>
+     * An explicit transaction rather than {@code @Transactional} on
+     * {@link #createJob}, for two reasons. The two writes have to commit
+     * together, so that a job can never exist without the event announcing
+     * it. But the surrounding method must *not* share that transaction:
+     * when the unique idempotency key loses a race, PostgreSQL aborts the
+     * whole transaction, and any statement issued afterwards in it fails
+     * too. Scoping the transaction to just these two writes means the
+     * failed insert rolls back cleanly - taking the event with it - and the
+     * recovery lookup in the caller runs in a fresh, healthy transaction.
+     */
+    private Job insertWithQueuedEvent(Job job) {
+        return transactionTemplate.execute(status -> {
+            Job saved = jobRepository.saveAndFlush(job);
+            eventRecorder.recordJobEvent(JobEventType.JOB_QUEUED, saved);
+            return saved;
+        });
     }
 
     @Transactional(readOnly = true)
@@ -89,7 +118,9 @@ public class JobService {
     public Job cancelJob(UUID id) {
         int updated = jobRepository.cancelIfQueued(id, Instant.now());
         if (updated == 1) {
-            return jobRepository.findById(id).orElseThrow(() -> new JobNotFoundException(id));
+            Job cancelled = jobRepository.findById(id).orElseThrow(() -> new JobNotFoundException(id));
+            eventRecorder.recordJobEvent(JobEventType.JOB_CANCELLED, cancelled);
+            return cancelled;
         }
         Job existing = jobRepository.findById(id).orElseThrow(() -> new JobNotFoundException(id));
         throw new JobNotCancellableException(id, existing.getStatus());

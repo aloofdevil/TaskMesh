@@ -130,32 +130,133 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
             @Param("executionId") UUID executionId);
 
     /**
-     * Releases a failed job back to the queue on behalf of the owning
-     * execution, clearing ownership so another worker can pick it up.
+     * Schedules a retry for a failed job on behalf of the owning execution.
      * <p>
-     * Day 4 requeues immediately. The retry budget, exponential backoff and
-     * dead-lettering that decide whether a failure *should* be retried are
-     * Day 5, and they replace the {@code status = 'QUEUED'} /
-     * {@code scheduled_at = now()} choice made here.
+     * The job goes to RETRYING with {@code scheduled_at} pushed into the
+     * future by the backoff, which is what makes the delay real: the claim
+     * query only sees QUEUED rows, and the promotion out of RETRYING is
+     * itself gated on {@code scheduled_at <= now()}, so there is no way to
+     * pick the job up early and no second queue to keep in step.
+     * <p>
+     * {@code attempt_count < max_attempts} is part of the WHERE clause so
+     * the budget is re-checked by the database at the moment of the write,
+     * not just in the Java that chose this branch.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE jobs
-               SET status = 'QUEUED',
+               SET status = 'RETRYING',
                    assigned_worker_id = NULL,
                    current_execution_id = NULL,
                    lease_until = NULL,
                    last_failure_reason = :failureReason,
-                   scheduled_at = now(),
+                   scheduled_at = now() + (:backoffSeconds * interval '1 second'),
                    updated_at = now(),
                    version = version + 1
              WHERE id = :jobId
                AND status = 'RUNNING'
                AND assigned_worker_id = :workerId
                AND current_execution_id = :executionId
+               AND attempt_count < max_attempts
             """, nativeQuery = true)
-    int failIfOwnedByExecution(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
+    int scheduleRetryIfOwnedByExecution(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
+            @Param("executionId") UUID executionId, @Param("failureReason") String failureReason,
+            @Param("backoffSeconds") long backoffSeconds);
+
+    /** Dead-letters a job whose attempt budget is spent, on behalf of the owning execution. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'DEAD_LETTER',
+                   assigned_worker_id = NULL,
+                   current_execution_id = NULL,
+                   lease_until = NULL,
+                   last_failure_reason = :failureReason,
+                   completed_at = now(),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND assigned_worker_id = :workerId
+               AND current_execution_id = :executionId
+               AND attempt_count >= max_attempts
+            """, nativeQuery = true)
+    int deadLetterIfOwnedByExecution(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
             @Param("executionId") UUID executionId, @Param("failureReason") String failureReason);
+
+    // ------------------------------------------------------------------
+    // Lease-expiry variants. The worker is gone, so there is no execution
+    // to match on; the fence is instead that the job is still RUNNING with
+    // a lapsed lease, which is only true until something else touches it.
+    // ------------------------------------------------------------------
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'RETRYING',
+                   assigned_worker_id = NULL,
+                   current_execution_id = NULL,
+                   lease_until = NULL,
+                   last_failure_reason = :failureReason,
+                   scheduled_at = now() + (:backoffSeconds * interval '1 second'),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND lease_until < now()
+               AND attempt_count < max_attempts
+            """, nativeQuery = true)
+    int scheduleRetryAfterLeaseExpiry(@Param("jobId") UUID jobId, @Param("failureReason") String failureReason,
+            @Param("backoffSeconds") long backoffSeconds);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'DEAD_LETTER',
+                   assigned_worker_id = NULL,
+                   current_execution_id = NULL,
+                   lease_until = NULL,
+                   last_failure_reason = :failureReason,
+                   completed_at = now(),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND lease_until < now()
+               AND attempt_count >= max_attempts
+            """, nativeQuery = true)
+    int deadLetterAfterLeaseExpiry(@Param("jobId") UUID jobId, @Param("failureReason") String failureReason);
+
+    // ------------------------------------------------------------------
+    // Retry promotion: RETRYING -> QUEUED once the backoff has elapsed.
+    // ------------------------------------------------------------------
+
+    /**
+     * Selects and row-locks jobs whose retry backoff has elapsed. The due
+     * check uses PostgreSQL's {@code now()}, the same clock that wrote
+     * {@code scheduled_at}, so a backoff means exactly what it said.
+     */
+    @Query(value = """
+            SELECT * FROM jobs
+             WHERE status = 'RETRYING'
+               AND scheduled_at <= now()
+             ORDER BY scheduled_at ASC
+             LIMIT :limit
+             FOR UPDATE SKIP LOCKED
+            """, nativeQuery = true)
+    List<Job> lockDueRetries(@Param("limit") int limit);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'QUEUED',
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id IN (:jobIds)
+               AND status = 'RETRYING'
+               AND scheduled_at <= now()
+            """, nativeQuery = true)
+    int promoteDueRetries(@Param("jobIds") Collection<UUID> jobIds);
 
     // ------------------------------------------------------------------
     // Lease reaper.
@@ -180,32 +281,6 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
             """, nativeQuery = true)
     List<Job> lockExpiredLeases(@Param("limit") int limit);
 
-    /**
-     * Returns jobs whose lease expired to the queue, clearing the dead
-     * execution's ownership. Clearing {@code current_execution_id} is what
-     * retroactively fences the crashed worker: any later complete/fail it
-     * sends can no longer match, so it cannot resurrect or corrupt a job
-     * that has moved on without it.
-     * <p>
-     * The status and lease conditions are repeated here even though the
-     * rows are already locked, so that the statement stays correct on its
-     * own terms and re-running it can never double-process a row.
-     */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query(value = """
-            UPDATE jobs
-               SET status = 'QUEUED',
-                   assigned_worker_id = NULL,
-                   current_execution_id = NULL,
-                   lease_until = NULL,
-                   scheduled_at = now(),
-                   updated_at = now(),
-                   version = version + 1
-             WHERE id IN (:jobIds)
-               AND status = 'RUNNING'
-               AND lease_until < now()
-            """, nativeQuery = true)
-    int requeueAfterLeaseExpiry(@Param("jobIds") Collection<UUID> jobIds);
 
     /**
      * Cancels a job only if it is still QUEUED. This is the concurrency

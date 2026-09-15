@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.taskmesh.common.worker.WorkerRegistrationRequest;
+import com.taskmesh.controlplane.domain.JobEventType;
 import com.taskmesh.controlplane.domain.Worker;
 import com.taskmesh.controlplane.repository.WorkerRepository;
 
@@ -18,10 +19,13 @@ public class WorkerService {
 
     private final WorkerRepository workerRepository;
     private final WorkerLivenessCache livenessCache;
+    private final JobEventRecorder eventRecorder;
 
-    public WorkerService(WorkerRepository workerRepository, WorkerLivenessCache livenessCache) {
+    public WorkerService(WorkerRepository workerRepository, WorkerLivenessCache livenessCache,
+            JobEventRecorder eventRecorder) {
         this.workerRepository = workerRepository;
         this.livenessCache = livenessCache;
+        this.eventRecorder = eventRecorder;
     }
 
     /**
@@ -40,6 +44,7 @@ public class WorkerService {
                 .orElseGet(() -> Worker.register(request.workerId(), request.hostname(), request.capacity()));
 
         Worker saved = workerRepository.save(worker);
+        eventRecorder.recordWorkerEvent(JobEventType.WORKER_REGISTERED, saved);
         livenessCache.markAlive(saved.getId());
         log.info("Worker {} registered from {} with capacity {}", saved.getId(), saved.getHostname(),
                 saved.getCapacity());
@@ -69,6 +74,8 @@ public class WorkerService {
         if (updated == 0) {
             throw new WorkerNotFoundException(workerId);
         }
+        workerRepository.findById(workerId)
+                .ifPresent(worker -> eventRecorder.recordWorkerEvent(JobEventType.WORKER_DEREGISTERED, worker));
         livenessCache.clear(workerId);
         log.info("Worker {} deregistered", workerId);
     }

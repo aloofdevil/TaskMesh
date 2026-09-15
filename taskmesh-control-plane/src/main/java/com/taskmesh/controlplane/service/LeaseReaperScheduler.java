@@ -38,5 +38,16 @@ public class LeaseReaperScheduler {
         } catch (RuntimeException e) {
             log.error("Lease reaper sweep failed; will retry on next tick", e);
         }
+
+        // Separate try/catch so a failure recovering leases does not also
+        // stop retries being promoted, and vice versa.
+        try {
+            int promoted = reaper.promoteDueRetries();
+            if (promoted > 0) {
+                log.info("Promoted {} job(s) out of retry backoff", promoted);
+            }
+        } catch (RuntimeException e) {
+            log.error("Retry promotion failed; will retry on next tick", e);
+        }
     }
 }

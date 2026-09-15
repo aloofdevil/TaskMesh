@@ -22,6 +22,8 @@ public record JobResponse(
         Instant scheduledAt,
         int attemptCount,
         int maxAttempts,
+        /** Why the last attempt failed; null unless an attempt has failed. Explains a DEAD_LETTER job. */
+        String lastFailureReason,
         Instant createdAt,
         Instant updatedAt) {
 
@@ -35,6 +37,7 @@ public record JobResponse(
                 job.getScheduledAt(),
                 job.getAttemptCount(),
                 job.getMaxAttempts(),
+                job.getLastFailureReason(),
                 job.getCreatedAt(),
                 job.getUpdatedAt());
     }
