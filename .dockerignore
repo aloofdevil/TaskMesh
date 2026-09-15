@@ -1,0 +1,8 @@
+.git
+.idea
+.vscode
+**/target/
+docs/
+loadtest/
+k8s/
+*.md

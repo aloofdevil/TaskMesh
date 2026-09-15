@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>com.taskmesh</groupId>
+		<artifactId>taskmesh-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>taskmesh-common</artifactId>
+	<packaging>jar</packaging>
+	<name>taskmesh-common</name>
+	<description>Shared DTOs, enums and event schemas used by both the control plane and workers</description>
+
+	<!--
+		No dependencies yet: this module is a placeholder for Day 2, when job/worker
+		DTOs and shared enums (JobStatus, event payloads) that both the control plane
+		and worker need are introduced. Kept empty rather than pre-adding libraries
+		that nothing uses yet.
+	-->
+
+</project>

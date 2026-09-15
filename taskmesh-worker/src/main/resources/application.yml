@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: taskmesh-worker
+
+server:
+  port: ${SERVER_PORT:8081}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+# WORKER_ID is left unset here; it will be sourced from the pod name via the
+# Kubernetes downward API (Day 6) or defaulted to a random id at startup
+# (Day 3), never hardcoded.
+
+logging:
+  level:
+    com.taskmesh: INFO

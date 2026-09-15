@@ -1,0 +1,29 @@
+# Build context is the repository root (see docker-compose.yml), because the
+# control plane is built as part of the Maven reactor together with
+# taskmesh-common.
+
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /workspace
+
+# Copy just the POMs first so dependency resolution is cached across builds
+# as long as no dependency changes.
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+COPY taskmesh-common/pom.xml taskmesh-common/pom.xml
+COPY taskmesh-control-plane/pom.xml taskmesh-control-plane/pom.xml
+COPY taskmesh-worker/pom.xml taskmesh-worker/pom.xml
+RUN chmod +x mvnw && \
+    ./mvnw -q -B -pl taskmesh-control-plane -am dependency:go-offline
+
+COPY taskmesh-common/src taskmesh-common/src
+COPY taskmesh-control-plane/src taskmesh-control-plane/src
+RUN ./mvnw -q -B -pl taskmesh-control-plane -am package -DskipTests
+
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+RUN useradd --system --create-home taskmesh
+USER taskmesh
+COPY --from=build /workspace/taskmesh-control-plane/target/taskmesh-control-plane-*.jar app.jar
+
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
