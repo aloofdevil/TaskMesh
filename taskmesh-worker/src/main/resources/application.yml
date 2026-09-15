@@ -16,6 +16,11 @@ taskmesh:
     capacity: ${WORKER_CAPACITY:2}
     poll-interval-ms: ${WORKER_POLL_INTERVAL_MS:1000}
     heartbeat-interval-ms: ${WORKER_HEARTBEAT_INTERVAL_MS:5000}
+    # Must stay well under the control plane's 30s lease: renewing every
+    # 10s gives three attempts before the lease would lapse.
+    lease-renew-interval-ms: ${WORKER_LEASE_RENEW_INTERVAL_MS:10000}
+    # Stand-in for real work.
+    job-duration-ms: ${WORKER_JOB_DURATION_MS:2000}
 
 management:
   endpoints:

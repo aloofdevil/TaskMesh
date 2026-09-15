@@ -17,10 +17,10 @@ import jakarta.persistence.Table;
  * {@code attempt_count} can never disagree - the table's
  * {@code UNIQUE (job_id, attempt_number)} constraint enforces that.
  * <p>
- * Day 3 mapping only: {@code completed_at} and {@code failure_reason} exist
- * in the schema but are written when a worker reports a result (Day 4), so
- * they are intentionally left unmapped rather than added as fields nothing
- * sets.
+ * Attempts are closed out by conditional SQL updates keyed on
+ * {@code execution_id} (which is UNIQUE), never by mutating this entity -
+ * so the terminal fields below are read here but written in
+ * {@code JobAttemptRepository}.
  * <p>
  * {@code job_id} is a plain {@link UUID} rather than a {@code @ManyToOne}
  * association: an attempt is written, never navigated from, so an
@@ -52,6 +52,12 @@ public class JobAttempt {
 
     @Column(name = "started_at", nullable = false, updatable = false)
     private Instant startedAt;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
+    @Column(name = "failure_reason")
+    private String failureReason;
 
     protected JobAttempt() {
         // required by JPA
@@ -98,5 +104,13 @@ public class JobAttempt {
 
     public Instant getStartedAt() {
         return startedAt;
+    }
+
+    public Instant getCompletedAt() {
+        return completedAt;
+    }
+
+    public String getFailureReason() {
+        return failureReason;
     }
 }

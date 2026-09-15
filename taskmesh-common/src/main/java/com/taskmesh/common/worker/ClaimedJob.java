@@ -1,5 +1,6 @@
 package com.taskmesh.common.worker;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -8,9 +9,14 @@ import java.util.UUID;
  * needs to execute it, and nothing more (no lease, worker assignment, or
  * internal bookkeeping columns).
  * <p>
- * {@code executionId} identifies this specific attempt. Day 3 only
- * establishes the identity; the fencing rules that make it meaningful
- * (rejecting writes from a stale execution) are Day 4.
+ * {@code executionId} is the fencing token for this attempt: every
+ * subsequent write the worker makes (renew, complete, fail) must carry it,
+ * and the control plane rejects it once a newer execution owns the job.
+ * <p>
+ * {@code leaseUntil} is when this execution's claim on the job lapses if
+ * the worker stops renewing. It is computed by PostgreSQL, so it is
+ * comparable with the control plane's expiry checks regardless of the
+ * worker's own clock.
  */
 public record ClaimedJob(
         UUID jobId,
@@ -19,5 +25,6 @@ public record ClaimedJob(
         Map<String, Object> payload,
         int priority,
         int attemptNumber,
-        int maxAttempts) {
+        int maxAttempts,
+        Instant leaseUntil) {
 }

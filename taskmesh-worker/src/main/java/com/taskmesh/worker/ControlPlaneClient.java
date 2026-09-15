@@ -1,13 +1,19 @@
 package com.taskmesh.worker;
 
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import com.taskmesh.common.worker.ClaimedJob;
+import com.taskmesh.common.worker.ExecutionReportRequest;
+import com.taskmesh.common.worker.FailJobRequest;
+import com.taskmesh.common.worker.LeaseResponse;
 import com.taskmesh.common.worker.WorkerRegistrationRequest;
 import com.taskmesh.common.worker.WorkerResponse;
 
@@ -18,6 +24,9 @@ import com.taskmesh.common.worker.WorkerResponse;
  */
 @Component
 public class ControlPlaneClient {
+
+    /** Error code the control plane returns when this execution has been fenced. */
+    private static final String STALE_EXECUTION = "STALE_EXECUTION";
 
     private final RestClient restClient;
 
@@ -62,5 +71,47 @@ public class ControlPlaneClient {
             return Optional.empty();
         }
         return Optional.ofNullable(response.getBody());
+    }
+
+    public LeaseResponse renewLease(UUID jobId, String workerId, UUID executionId) {
+        return execution(() -> restClient.post()
+                .uri("/internal/jobs/{jobId}/lease/renew", jobId)
+                .body(new ExecutionReportRequest(workerId, executionId))
+                .retrieve()
+                .body(LeaseResponse.class));
+    }
+
+    public void complete(UUID jobId, String workerId, UUID executionId) {
+        execution(() -> restClient.post()
+                .uri("/internal/jobs/{jobId}/complete", jobId)
+                .body(new ExecutionReportRequest(workerId, executionId))
+                .retrieve()
+                .toBodilessEntity());
+    }
+
+    public void fail(UUID jobId, String workerId, UUID executionId, String failureReason) {
+        execution(() -> restClient.post()
+                .uri("/internal/jobs/{jobId}/fail", jobId)
+                .body(new FailJobRequest(workerId, executionId, failureReason))
+                .retrieve()
+                .toBodilessEntity());
+    }
+
+    /**
+     * Turns the control plane's fencing rejection into a typed exception.
+     * A 409 carrying {@code STALE_EXECUTION} is not a transient error to
+     * retry - it means another execution owns the job now, so the caller
+     * must give up on this one rather than keep trying.
+     */
+    private <T> T execution(Supplier<T> call) {
+        try {
+            return call.get();
+        } catch (HttpClientErrorException.Conflict e) {
+            String body = e.getResponseBodyAsString();
+            if (body != null && body.contains(STALE_EXECUTION)) {
+                throw new StaleExecutionException(body);
+            }
+            throw e;
+        }
     }
 }

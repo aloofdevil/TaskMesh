@@ -15,6 +15,7 @@ import com.taskmesh.controlplane.api.dto.ErrorResponse;
 import com.taskmesh.controlplane.service.IdempotencyKeyConflictException;
 import com.taskmesh.controlplane.service.JobNotCancellableException;
 import com.taskmesh.controlplane.service.JobNotFoundException;
+import com.taskmesh.controlplane.service.StaleExecutionException;
 import com.taskmesh.controlplane.service.WorkerNotActiveException;
 import com.taskmesh.controlplane.service.WorkerNotFoundException;
 
@@ -36,6 +37,17 @@ public class ApiExceptionHandler {
     @ExceptionHandler(JobNotCancellableException.class)
     public ResponseEntity<ErrorResponse> handleNotCancellable(JobNotCancellableException ex, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request);
+    }
+
+    /**
+     * Fencing rejection. Carries the {@code STALE_EXECUTION} code in the
+     * {@code error} field so a worker can recognise "you have been fenced"
+     * specifically, rather than having to guess from a generic 409, and
+     * stop working on that execution.
+     */
+    @ExceptionHandler(StaleExecutionException.class)
+    public ResponseEntity<ErrorResponse> handleStaleExecution(StaleExecutionException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, StaleExecutionException.ERROR_CODE, ex.getMessage(), request);
     }
 
     @ExceptionHandler(WorkerNotFoundException.class)
@@ -67,8 +79,14 @@ public class ApiExceptionHandler {
     }
 
     private ResponseEntity<ErrorResponse> build(HttpStatus status, String message, HttpServletRequest request) {
+        return build(status, status.getReasonPhrase(), message, request);
+    }
+
+    /** Variant for errors that carry a specific machine-readable code rather than the HTTP reason phrase. */
+    private ResponseEntity<ErrorResponse> build(HttpStatus status, String errorCode, String message,
+            HttpServletRequest request) {
         ErrorResponse body = new ErrorResponse(
-                Instant.now(), status.value(), status.getReasonPhrase(), message, request.getRequestURI());
+                Instant.now(), status.value(), errorCode, message, request.getRequestURI());
         return ResponseEntity.status(status).body(body);
     }
 }

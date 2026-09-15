@@ -1,5 +1,6 @@
 package com.taskmesh.controlplane.service;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,12 +29,14 @@ public class DispatchService {
     private final JobRepository jobRepository;
     private final JobAttemptRepository jobAttemptRepository;
     private final WorkerService workerService;
+    private final ReliabilityProperties properties;
 
     public DispatchService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            WorkerService workerService) {
+            WorkerService workerService, ReliabilityProperties properties) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.workerService = workerService;
+        this.properties = properties;
     }
 
     /**
@@ -66,13 +69,21 @@ public class DispatchService {
         }
 
         Job job = locked.get(0);
+        // A fresh execution id per claim is what lets a later reassignment
+        // invalidate this one: the previous holder's id stops matching the
+        // job the moment a new claim overwrites it.
         UUID executionId = UUID.randomUUID();
-        job.claimedBy(workerId, executionId);
+        // The lease deadline is anchored to the database's clock, since
+        // that is the clock the reaper judges expiry against. Inside this
+        // transaction now() is fixed at transaction start, so the lease
+        // runs from when the claim began.
+        Instant leaseUntil = jobRepository.databaseTime().plusSeconds(properties.leaseDurationSeconds());
+        job.claimedBy(workerId, executionId, leaseUntil);
 
         jobAttemptRepository.save(JobAttempt.start(job.getId(), job.getAttemptCount(), executionId, workerId));
 
-        log.info("Job {} claimed by worker {} (attempt {}, execution {})", job.getId(), workerId,
-                job.getAttemptCount(), executionId);
+        log.info("Job {} claimed by worker {} (attempt {}, execution {}, lease until {})", job.getId(), workerId,
+                job.getAttemptCount(), executionId, leaseUntil);
 
         return Optional.of(new ClaimedJob(
                 job.getId(),
@@ -81,6 +92,7 @@ public class DispatchService {
                 job.getPayload(),
                 job.getPriority(),
                 job.getAttemptCount(),
-                job.getMaxAttempts()));
+                job.getMaxAttempts(),
+                leaseUntil));
     }
 }

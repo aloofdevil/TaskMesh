@@ -29,6 +29,15 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
+taskmesh:
+  reliability:
+    # 30s lease against the worker's 10s renewal interval: three chances to
+    # renew before a job is considered abandoned.
+    lease-duration-seconds: ${LEASE_DURATION_SECONDS:30}
+    reaper-enabled: ${REAPER_ENABLED:true}
+    reaper-interval-ms: ${REAPER_INTERVAL_MS:1000}
+    reaper-batch-size: ${REAPER_BATCH_SIZE:100}
+
 server:
   port: ${SERVER_PORT:8080}
 

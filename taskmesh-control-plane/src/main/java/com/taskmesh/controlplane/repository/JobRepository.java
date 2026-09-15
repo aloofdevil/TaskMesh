@@ -1,6 +1,7 @@
 package com.taskmesh.controlplane.repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -62,6 +63,149 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
              FOR UPDATE SKIP LOCKED
             """, nativeQuery = true)
     List<Job> lockNextClaimableJobs(@Param("limit") int limit);
+
+    // ------------------------------------------------------------------
+    // Fenced execution writes.
+    //
+    // Each of the three statements below is a single conditional UPDATE
+    // whose WHERE clause *is* the fence: the row changes only while this
+    // worker's execution still owns it. There is deliberately no "read the
+    // job, check ownership in Java, then write" anywhere - that pattern
+    // has a window between the check and the write in which the reaper (or
+    // another worker's claim) can take the job, and the write would then
+    // land on an execution that no longer owns it. Here the check and the
+    // write are the same statement, on a row PostgreSQL locks for its
+    // duration, so an affected-row count of 0 is a definitive "you are
+    // stale" and 1 is a definitive "you won".
+    // ------------------------------------------------------------------
+
+    /**
+     * Extends the lease of the execution that currently owns the job.
+     * <p>
+     * {@code lease_until > now()} is part of the fence on purpose: a worker
+     * whose lease has already lapsed must not be able to renew its way back
+     * to life in the window before the reaper gets to the row, because the
+     * job is, by then, already fair game for reassignment.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET lease_until = now() + (:leaseSeconds * interval '1 second'),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND assigned_worker_id = :workerId
+               AND current_execution_id = :executionId
+               AND lease_until > now()
+            """, nativeQuery = true)
+    int renewLease(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
+            @Param("executionId") UUID executionId, @Param("leaseSeconds") int leaseSeconds);
+
+    /**
+     * Marks the job COMPLETED on behalf of the owning execution.
+     * <p>
+     * Note there is no {@code lease_until > now()} condition here, unlike
+     * renewal. If the lease has lapsed but the reaper has not yet requeued
+     * the job, this execution is still the one that owns it and the work
+     * genuinely was done - accepting the result is both safe and avoids
+     * throwing away completed work. Once the reaper *has* acted,
+     * {@code current_execution_id} no longer matches and this update
+     * affects no rows, which is exactly the rejection we want.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'COMPLETED',
+                   completed_at = now(),
+                   lease_until = NULL,
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND assigned_worker_id = :workerId
+               AND current_execution_id = :executionId
+            """, nativeQuery = true)
+    int completeIfOwnedByExecution(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
+            @Param("executionId") UUID executionId);
+
+    /**
+     * Releases a failed job back to the queue on behalf of the owning
+     * execution, clearing ownership so another worker can pick it up.
+     * <p>
+     * Day 4 requeues immediately. The retry budget, exponential backoff and
+     * dead-lettering that decide whether a failure *should* be retried are
+     * Day 5, and they replace the {@code status = 'QUEUED'} /
+     * {@code scheduled_at = now()} choice made here.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'QUEUED',
+                   assigned_worker_id = NULL,
+                   current_execution_id = NULL,
+                   lease_until = NULL,
+                   last_failure_reason = :failureReason,
+                   scheduled_at = now(),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id = :jobId
+               AND status = 'RUNNING'
+               AND assigned_worker_id = :workerId
+               AND current_execution_id = :executionId
+            """, nativeQuery = true)
+    int failIfOwnedByExecution(@Param("jobId") UUID jobId, @Param("workerId") String workerId,
+            @Param("executionId") UUID executionId, @Param("failureReason") String failureReason);
+
+    // ------------------------------------------------------------------
+    // Lease reaper.
+    // ------------------------------------------------------------------
+
+    /**
+     * Selects and row-locks RUNNING jobs whose lease has lapsed, judged by
+     * PostgreSQL's clock rather than any JVM's.
+     * <p>
+     * {@code SKIP LOCKED} makes the reaper safe to run in more than one
+     * control-plane instance: concurrent reapers take disjoint sets of rows
+     * instead of colliding, and a row already being completed by its worker
+     * is skipped rather than fought over.
+     */
+    @Query(value = """
+            SELECT * FROM jobs
+             WHERE status = 'RUNNING'
+               AND lease_until < now()
+             ORDER BY lease_until ASC
+             LIMIT :limit
+             FOR UPDATE SKIP LOCKED
+            """, nativeQuery = true)
+    List<Job> lockExpiredLeases(@Param("limit") int limit);
+
+    /**
+     * Returns jobs whose lease expired to the queue, clearing the dead
+     * execution's ownership. Clearing {@code current_execution_id} is what
+     * retroactively fences the crashed worker: any later complete/fail it
+     * sends can no longer match, so it cannot resurrect or corrupt a job
+     * that has moved on without it.
+     * <p>
+     * The status and lease conditions are repeated here even though the
+     * rows are already locked, so that the statement stays correct on its
+     * own terms and re-running it can never double-process a row.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE jobs
+               SET status = 'QUEUED',
+                   assigned_worker_id = NULL,
+                   current_execution_id = NULL,
+                   lease_until = NULL,
+                   scheduled_at = now(),
+                   updated_at = now(),
+                   version = version + 1
+             WHERE id IN (:jobIds)
+               AND status = 'RUNNING'
+               AND lease_until < now()
+            """, nativeQuery = true)
+    int requeueAfterLeaseExpiry(@Param("jobIds") Collection<UUID> jobIds);
 
     /**
      * Cancels a job only if it is still QUEUED. This is the concurrency

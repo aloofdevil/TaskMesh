@@ -76,11 +76,27 @@ public class Job {
     @Column(name = "current_execution_id")
     private UUID currentExecutionId;
 
+    /**
+     * When the current execution's claim on this job lapses. Always
+     * computed from PostgreSQL's clock, never the JVM's, because the
+     * reaper decides expiry with {@code lease_until < now()} in the
+     * database - a lease written from a JVM clock that runs ahead of the
+     * database would survive past its intended deadline.
+     */
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
+    @Column(name = "last_failure_reason")
+    private String lastFailureReason;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     @Column(name = "started_at")
     private Instant startedAt;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -151,8 +167,11 @@ public class Job {
      * <p>
      * {@code startedAt} records the first time the job ever started, so it
      * is not overwritten by later attempts.
+     *
+     * @param leaseUntil the lease deadline, which must be derived from the
+     *                   database clock (see {@code JobRepository.databaseTime()})
      */
-    public void claimedBy(String workerId, UUID executionId) {
+    public void claimedBy(String workerId, UUID executionId, Instant leaseUntil) {
         if (status != JobStatus.QUEUED) {
             throw new IllegalStateException("Job " + id + " cannot be claimed because it is " + status);
         }
@@ -160,6 +179,7 @@ public class Job {
         this.status = JobStatus.RUNNING;
         this.assignedWorkerId = workerId;
         this.currentExecutionId = executionId;
+        this.leaseUntil = Objects.requireNonNull(leaseUntil, "leaseUntil");
         this.attemptCount = this.attemptCount + 1;
         if (this.startedAt == null) {
             this.startedAt = now;
@@ -213,6 +233,18 @@ public class Job {
 
     public UUID getCurrentExecutionId() {
         return currentExecutionId;
+    }
+
+    public Instant getLeaseUntil() {
+        return leaseUntil;
+    }
+
+    public String getLastFailureReason() {
+        return lastFailureReason;
+    }
+
+    public Instant getCompletedAt() {
+        return completedAt;
     }
 
     public Instant getCreatedAt() {
