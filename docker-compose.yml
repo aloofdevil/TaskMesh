@@ -70,6 +70,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # Pass-through for the Day 11 connection-pool experiment. This is a
+      # stock Spring Boot property, not a new setting: leaving it unset
+      # preserves HikariCP's own default of 10, which is what every run
+      # before Day 11 used. Exposed here only so the same image can be
+      # measured at several pool sizes without rebuilding it.
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL_SIZE:-10}
     depends_on:
       postgres:
         condition: service_healthy
