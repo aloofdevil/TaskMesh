@@ -25,6 +25,7 @@
 		<module>taskmesh-common</module>
 		<module>taskmesh-control-plane</module>
 		<module>taskmesh-worker</module>
+		<module>taskmesh-loadgen</module>
 	</modules>
 
 </project>

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>com.taskmesh</groupId>
+		<artifactId>taskmesh-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+	<artifactId>taskmesh-loadgen</artifactId>
+	<packaging>jar</packaging>
+	<name>taskmesh-loadgen</name>
+	<description>Logical worker load generator: represents thousands of workers from one process</description>
+
+	<!--
+		Deliberately not a Spring Boot application. This is a benchmarking
+		tool, not a service: it needs a main method, an HTTP client and a
+		clock, all of which the JDK already provides. Keeping Spring out
+		keeps its startup cost and thread pools out of the measurements.
+
+		Two dependencies only:
+		  - taskmesh-common, so the simulator speaks the *same* wire
+		    contract as the real worker rather than a hand-copied
+		    approximation that could silently drift from it. It carries
+		    only the Bean Validation API, which is annotations alone.
+		  - jackson-databind, already used throughout this project, because
+		    hand-rolling a JSON parser for the claim response would be
+		    strictly worse engineering than reusing the one the control
+		    plane serializes with.
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>com.taskmesh</groupId>
+			<artifactId>taskmesh-common</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>tools.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.assertj</groupId>
+			<artifactId>assertj-core</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!--
+				Copy the runtime dependencies next to the jar so the manifest
+				Class-Path below resolves, which makes `java -jar` work without
+				pulling in a shade/uber-jar plugin.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-dependency-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>copy-runtime-dependencies</id>
+						<phase>package</phase>
+						<goals>
+							<goal>copy-dependencies</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.build.directory}/lib</outputDirectory>
+							<includeScope>runtime</includeScope>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<configuration>
+					<archive>
+						<manifest>
+							<mainClass>com.taskmesh.loadgen.LoadGenerator</mainClass>
+							<addClasspath>true</addClasspath>
+							<classpathPrefix>lib/</classpathPrefix>
+						</manifest>
+					</archive>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+</project>

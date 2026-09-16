@@ -282,7 +282,8 @@ These are deliberate scope decisions for a 7-day project, not oversights:
 taskmesh-common/          Shared worker-protocol DTOs
 taskmesh-control-plane/   REST API, claiming, leases, reaper, retries, outbox
 taskmesh-worker/          Pull-model worker runtime
+taskmesh-loadgen/         Logical worker load generator (benchmarking only)
 docker/                   Dockerfiles for both services
 k8s/                      Kubernetes manifests
-docs/                     Kubernetes guide and demo runbook
+docs/                     Kubernetes guide, demo runbook, load-generator guide
 ```
