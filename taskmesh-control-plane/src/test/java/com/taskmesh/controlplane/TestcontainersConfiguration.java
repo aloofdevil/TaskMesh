@@ -12,22 +12,30 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * The backing services tests run against: PostgreSQL, Redis and Kafka.
  * <p>
- * Split into {@link DatabaseAndRedis} and {@link SharedKafkaBroker} so a
- * test that needs to control its own broker - to simulate an outage, say -
- * can import the database half and supply Kafka itself.
+ * Importing this class gives all three. The nested pieces exist so a test
+ * that needs to control one service itself - to stop it and observe an
+ * outage - can import the others and supply that one on its own. Two tests
+ * do exactly that: {@code OutboxKafkaOutageTests} brings its own Kafka, and
+ * {@code RedisOutageAndSchedulerTests} brings its own Redis.
  */
 @TestConfiguration(proxyBeanMethods = false)
-@Import({TestcontainersConfiguration.DatabaseAndRedis.class, TestcontainersConfiguration.SharedKafkaBroker.class})
+@Import({TestcontainersConfiguration.Database.class,
+		TestcontainersConfiguration.RedisCache.class,
+		TestcontainersConfiguration.SharedKafkaBroker.class})
 public class TestcontainersConfiguration {
 
 	@TestConfiguration(proxyBeanMethods = false)
-	public static class DatabaseAndRedis {
+	public static class Database {
 
 		@Bean
 		@ServiceConnection
 		PostgreSQLContainer postgresContainer() {
 			return new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"));
 		}
+	}
+
+	@TestConfiguration(proxyBeanMethods = false)
+	public static class RedisCache {
 
 		@Bean
 		@ServiceConnection(name = "redis")
@@ -55,6 +63,18 @@ public class TestcontainersConfiguration {
 		KafkaContainer kafkaContainer() {
 			return SharedKafka.INSTANCE;
 		}
+	}
+
+	/** PostgreSQL + Redis, for a test that supplies its own Kafka. */
+	@TestConfiguration(proxyBeanMethods = false)
+	@Import({Database.class, RedisCache.class})
+	public static class DatabaseAndRedis {
+	}
+
+	/** PostgreSQL + Kafka, for a test that supplies its own Redis. */
+	@TestConfiguration(proxyBeanMethods = false)
+	@Import({Database.class, SharedKafkaBroker.class})
+	public static class DatabaseAndKafka {
 	}
 
 	private static final class SharedKafka {

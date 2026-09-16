@@ -47,6 +47,9 @@ public class WorkerRuntime {
     /** Guards heartbeat/poll so they do nothing until registration has actually succeeded. */
     private volatile boolean registered;
 
+    /** Set on SIGTERM. Once true this worker claims nothing further. */
+    private volatile boolean shuttingDown;
+
     public WorkerRuntime(ControlPlaneClient controlPlane, WorkerIdentity identity, WorkerProperties properties) {
         this.controlPlane = controlPlane;
         this.identity = identity;
@@ -115,7 +118,9 @@ public class WorkerRuntime {
 
     @Scheduled(fixedDelayString = "${taskmesh.worker.poll-interval-ms}")
     public void pollForWork() {
-        if (!registered || inFlight.size() >= properties.capacity()) {
+        // Stopping claiming is the first thing shutdown does: taking on new
+        // work while terminating would only guarantee it gets abandoned.
+        if (shuttingDown || !registered || inFlight.size() >= properties.capacity()) {
             return;
         }
         try {
@@ -190,7 +195,18 @@ public class WorkerRuntime {
         Thread.sleep(properties.jobDurationMs());
     }
 
-    private void tryRegister() {
+    /**
+     * Synchronized because two callers race here: {@link #onStartup()} on
+     * the main thread and {@link #heartbeat()} on a scheduler thread, which
+     * both register when the flag is still false. Without this they issue
+     * two concurrent registrations for the same id, and the control plane's
+     * find-then-insert upsert turns the loser into a duplicate-key 500.
+     * The second caller re-checks the flag and finds the work already done.
+     */
+    private synchronized void tryRegister() {
+        if (registered) {
+            return;
+        }
         try {
             controlPlane.register(new WorkerRegistrationRequest(
                     identity.workerId(), identity.hostname(), properties.capacity()));
@@ -202,19 +218,50 @@ public class WorkerRuntime {
     }
 
     /**
-     * Graceful shutdown. In-flight jobs are not drained: they keep their
-     * leases, which lapse shortly after this process exits, and the reaper
-     * then requeues them. Draining would be nicer but it is a Day 6
-     * concern alongside Kubernetes termination handling.
+     * Graceful shutdown, as Kubernetes drives it: SIGTERM arrives, this runs,
+     * and the pod is killed outright once {@code terminationGracePeriodSeconds}
+     * elapses.
+     * <p>
+     * The order matters. Claiming stops first, so nothing new is taken on.
+     * In-flight jobs are then given up to {@code shutdown-drain-ms} to finish
+     * and report their own results - finishing honestly is better than
+     * abandoning work that was nearly done, and a job that reports success
+     * here never needs re-running. Only then does the worker deregister and
+     * exit.
+     * <p>
+     * Draining deliberately does not renew leases. The drain window is kept
+     * comfortably shorter than the 30s lease, so a job that started draining
+     * with a freshly renewed lease still holds it throughout. Extending
+     * leases while shutting down would only delay recovery of work this
+     * process is about to abandon.
+     * <p>
+     * If a job cannot finish in the window it is simply left. Nothing is
+     * reported for it, so fencing is untouched: its lease lapses, the reaper
+     * recovers it, and another worker runs it under a new execution id. That
+     * is the existing safety net and shutdown relies on it rather than trying
+     * to do anything cleverer.
      */
     @PreDestroy
     public void onShutdown() {
-        executor.shutdownNow();
+        shuttingDown = true;
+        log.info("Worker {} shutting down; no longer claiming work ({} in flight)",
+                identity.workerId(), inFlight.size());
+
+        // shutdown(), not shutdownNow(): let running jobs finish rather than
+        // interrupting them mid-execution.
+        executor.shutdown();
         try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
+            if (!executor.awaitTermination(properties.shutdownDrainMs(), TimeUnit.MILLISECONDS)) {
+                log.warn("Worker {} still had {} job(s) running after {}ms; abandoning them - their leases will "
+                        + "expire and the control plane will reassign them",
+                        identity.workerId(), inFlight.size(), properties.shutdownDrainMs());
+                executor.shutdownNow();
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            executor.shutdownNow();
         }
+
         if (!registered) {
             return;
         }

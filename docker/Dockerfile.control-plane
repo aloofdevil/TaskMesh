@@ -25,5 +25,24 @@ RUN useradd --system --create-home taskmesh
 USER taskmesh
 COPY --from=build /workspace/taskmesh-control-plane/target/taskmesh-control-plane-*.jar app.jar
 
+# Without this the JVM sizes its heap from the host's memory and ignores the
+# container limit, which is how a pod gets OOMKilled despite a limit that
+# looks generous.
+# networkaddress.cache.ttl: the JVM caches successful DNS lookups, and a
+# container that restarts can come back on a different IP. Without a
+# bounded TTL the client keeps reconnecting to the old address forever -
+# observed with Redis, where recovery after an outage never happened
+# because Lettuce retried an IP another container had since taken over.
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -Dnetworkaddress.cache.ttl=10"
+
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+
+# Readiness (not the aggregate health endpoint) so that a Redis or Kafka
+# outage does not make the container look unhealthy - the control plane
+# keeps serving jobs through either.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=45s --retries=5 \
+    CMD curl -fsS http://localhost:8080/actuator/health/readiness || exit 1
+
+# Exec form, so the JVM is PID 1 and receives SIGTERM directly rather than
+# having it swallowed by a shell.
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

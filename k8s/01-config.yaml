@@ -1,0 +1,34 @@
+# Non-secret configuration shared by the control plane and workers.
+#
+# Every address here is a Kubernetes Service DNS name. Nothing uses
+# localhost for cross-pod traffic: inside a pod localhost is that pod, so a
+# localhost address for another component resolves to the wrong place and
+# fails in a way that looks like a network problem rather than a config one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskmesh-config
+  namespace: taskmesh
+data:
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "taskmesh"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  # The broker advertises exactly this address (see 12-kafka.yaml), so what
+  # clients are told to connect to is what they can actually reach.
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  CONTROL_PLANE_URL: "http://control-plane:8080"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: taskmesh-db
+  namespace: taskmesh
+type: Opaque
+stringData:
+  # Local development credentials only. A real deployment would source these
+  # from a secret manager rather than committing them; kept here so the
+  # manifests are self-contained for a local cluster.
+  DB_USER: "taskmesh"
+  DB_PASSWORD: "taskmesh"

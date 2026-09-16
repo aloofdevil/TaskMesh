@@ -77,17 +77,28 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    # Readiness, so dependants wait until the API can actually serve.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 45s
+    stop_grace_period: 30s
 
-  # Started only on request: `docker compose --profile worker up -d`.
-  # Kept out of the default stack so `docker compose up -d` still brings up
-  # exactly the infrastructure + control plane it did before, and so a
-  # polling worker does not consume jobs during manual API verification.
+  # Part of the default stack. Scale with:
+  #   docker compose up -d --scale worker=3
+  # Each replica derives its own worker id from its container hostname, so
+  # they register separately and compete for jobs through the control plane.
+  # To drive the API by hand without workers consuming the jobs, stop them:
+  #   docker compose stop worker
   worker:
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
-    profiles: ["worker"]
     environment:
+      # Service name, never localhost: the control plane is a different
+      # container.
       CONTROL_PLANE_URL: http://control-plane:8080
       WORKER_CAPACITY: 2
       WORKER_POLL_INTERVAL_MS: 1000
@@ -96,9 +107,14 @@ services:
       # Overridable so a demo can hold a job long enough to kill the worker
       # mid-execution and watch the lease expire.
       WORKER_JOB_DURATION_MS: ${WORKER_JOB_DURATION_MS:-2000}
+      WORKER_SHUTDOWN_DRAIN_MS: ${WORKER_SHUTDOWN_DRAIN_MS:-20000}
+    # No published port: replicas would collide on it, and nothing needs to
+    # reach a worker - workers only make outbound calls.
     depends_on:
       control-plane:
-        condition: service_started
+        condition: service_healthy
+    # Long enough for the 20s drain plus deregistration before Docker kills it.
+    stop_grace_period: 40s
 
 volumes:
   taskmesh-postgres-data:

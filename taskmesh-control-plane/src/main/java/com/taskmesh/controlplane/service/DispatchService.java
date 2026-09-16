@@ -32,14 +32,17 @@ public class DispatchService {
     private final WorkerService workerService;
     private final ReliabilityProperties properties;
     private final JobEventRecorder eventRecorder;
+    private final TaskMeshMetrics metrics;
 
     public DispatchService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            WorkerService workerService, ReliabilityProperties properties, JobEventRecorder eventRecorder) {
+            WorkerService workerService, ReliabilityProperties properties, JobEventRecorder eventRecorder,
+            TaskMeshMetrics metrics) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.workerService = workerService;
         this.properties = properties;
         this.eventRecorder = eventRecorder;
+        this.metrics = metrics;
     }
 
     /**
@@ -64,6 +67,17 @@ public class DispatchService {
      */
     @Transactional
     public Optional<ClaimedJob> claim(String workerId) {
+        long startNanos = System.nanoTime();
+        try {
+            return doClaim(workerId);
+        } finally {
+            // Timed whether or not work was found: an empty poll is the
+            // common case, and its cost is what every idle worker pays.
+            metrics.recordClaimLatency(System.nanoTime() - startNanos);
+        }
+    }
+
+    private Optional<ClaimedJob> doClaim(String workerId) {
         workerService.requireActive(workerId);
 
         List<Job> locked = jobRepository.lockNextClaimableJobs(1);
@@ -87,6 +101,7 @@ public class DispatchService {
         // Same transaction as the claim itself, so a job that is RUNNING
         // always has the event that says so.
         eventRecorder.recordJobEvent(JobEventType.JOB_RUNNING, job);
+        metrics.jobClaimed();
 
         log.info("Job {} claimed by worker {} (attempt {}, execution {}, lease until {})", job.getId(), workerId,
                 job.getAttemptCount(), executionId, leaseUntil);

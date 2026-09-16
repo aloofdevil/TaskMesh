@@ -1,9 +1,12 @@
 package com.taskmesh.worker;
 
+import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -31,7 +34,18 @@ public class ControlPlaneClient {
     private final RestClient restClient;
 
     public ControlPlaneClient(RestClient.Builder builder, WorkerProperties properties) {
-        this.restClient = builder.baseUrl(properties.controlPlaneUrl()).build();
+        // Explicit timeouts, because the default is none: a control plane
+        // that accepts the connection and then stalls would otherwise block
+        // the calling scheduled task forever, permanently consuming one of
+        // the worker's scheduler threads. The read timeout is deliberately
+        // shorter than the lease duration, so a hung call cannot silently
+        // eat the window in which this worker was supposed to renew.
+        HttpClientSettings settings = HttpClientSettings.defaults()
+                .withTimeouts(Duration.ofSeconds(3), Duration.ofSeconds(10));
+        this.restClient = builder
+                .baseUrl(properties.controlPlaneUrl())
+                .requestFactory(ClientHttpRequestFactoryBuilder.detect().build(settings))
+                .build();
     }
 
     public WorkerResponse register(WorkerRegistrationRequest request) {

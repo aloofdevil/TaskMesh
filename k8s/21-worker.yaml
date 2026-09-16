@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskmesh-worker
+  namespace: taskmesh
+spec:
+  # Scale by hand: kubectl -n taskmesh scale deployment/taskmesh-worker --replicas=3
+  # Replicas compete for jobs through the control plane's atomic claim, so
+  # adding pods adds throughput without any coordination between them.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: taskmesh-worker
+  template:
+    metadata:
+      labels:
+        app: taskmesh-worker
+    spec:
+      containers:
+        - name: worker
+          image: taskmesh-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          env:
+            # Worker identity comes from the pod name via the downward API.
+            # This matters: every replica runs the same image with the same
+            # config, so without it they would all have to invent an id, and
+            # any shared or static value would make two pods appear to the
+            # control plane as one worker - each overwriting the other's
+            # registration and heartbeats. The pod name is unique per pod
+            # and stable for that pod's lifetime, which is exactly the
+            # property a worker id needs.
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: WORKER_CAPACITY
+              value: "2"
+            - name: WORKER_POLL_INTERVAL_MS
+              value: "1000"
+            - name: WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+            - name: WORKER_LEASE_RENEW_INTERVAL_MS
+              value: "10000"
+            - name: WORKER_JOB_DURATION_MS
+              value: "2000"
+            # Drain window on SIGTERM. Must stay below both the 30s lease
+            # and terminationGracePeriodSeconds below.
+            - name: WORKER_SHUTDOWN_DRAIN_MS
+              value: "20000"
+          envFrom:
+            - configMapRef:
+                name: taskmesh-config
+          # Only the JVM's own liveness. A worker that cannot reach the
+          # control plane is not broken - it retries registration itself -
+          # and restarting it would not bring the control plane back.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      # 20s drain + deregistration, with room to spare before SIGKILL.
+      terminationGracePeriodSeconds: 45
+# No Service: nothing connects *to* a worker. Workers only make outbound
+# calls to the control plane, which is what the pull model buys.

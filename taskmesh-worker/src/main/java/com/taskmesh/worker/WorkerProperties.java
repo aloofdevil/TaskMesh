@@ -16,6 +16,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param leaseRenewIntervalMs delay between lease renewals; must stay well below the control plane's
  *                             lease duration (10s against 30s) so a single failed renewal is survivable
  * @param jobDurationMs        how long the stand-in job execution sleeps for
+ * @param shutdownDrainMs      how long SIGTERM waits for in-flight jobs to finish before
+ *                             abandoning them to lease recovery; keep it below the control
+ *                             plane's lease duration and below terminationGracePeriodSeconds
  */
 @ConfigurationProperties(prefix = "taskmesh.worker")
 public record WorkerProperties(
@@ -26,5 +29,6 @@ public record WorkerProperties(
         long pollIntervalMs,
         long heartbeatIntervalMs,
         long leaseRenewIntervalMs,
-        long jobDurationMs) {
+        long jobDurationMs,
+        long shutdownDrainMs) {
 }

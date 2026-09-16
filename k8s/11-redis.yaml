@@ -1,0 +1,56 @@
+# Redis: worker liveness cache only.
+#
+# Deliberately ephemeral, with no PersistentVolumeClaim. Redis holds a
+# TTL'd projection of worker liveness that PostgreSQL also holds durably,
+# so losing the whole Redis dataset costs nothing but a few seconds of
+# heartbeat history - persisting it would imply an importance it does not
+# have.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: taskmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: taskmesh
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

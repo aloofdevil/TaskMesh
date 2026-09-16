@@ -4,8 +4,11 @@ import java.time.Duration;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+
+import io.lettuce.core.RedisException;
 
 /**
  * A TTL'd projection of worker liveness in Redis.
@@ -35,7 +38,7 @@ public class WorkerLivenessCache {
     public void markAlive(String workerId) {
         try {
             redis.opsForValue().set(key(workerId), "1", TTL);
-        } catch (RuntimeException e) {
+        } catch (DataAccessException | RedisException e) {
             log.warn("Could not record liveness for worker {} in Redis; PostgreSQL remains authoritative", workerId, e);
         }
     }
@@ -43,7 +46,7 @@ public class WorkerLivenessCache {
     public void clear(String workerId) {
         try {
             redis.delete(key(workerId));
-        } catch (RuntimeException e) {
+        } catch (DataAccessException | RedisException e) {
             log.warn("Could not clear liveness for worker {} in Redis", workerId, e);
         }
     }
@@ -51,7 +54,7 @@ public class WorkerLivenessCache {
     public boolean isAlive(String workerId) {
         try {
             return Boolean.TRUE.equals(redis.hasKey(key(workerId)));
-        } catch (RuntimeException e) {
+        } catch (DataAccessException | RedisException e) {
             log.warn("Could not read liveness for worker {} from Redis", workerId, e);
             return false;
         }

@@ -8,8 +8,11 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import com.taskmesh.controlplane.domain.Worker;
+import com.taskmesh.controlplane.domain.WorkerStatus;
 
 public interface WorkerRepository extends JpaRepository<Worker, String> {
+
+    long countByStatus(WorkerStatus status);
 
     /**
      * Records a heartbeat for an ACTIVE worker. Scoped to ACTIVE so a

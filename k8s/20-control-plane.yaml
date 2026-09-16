@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: taskmesh
+spec:
+  # One replica. The lease reaper and outbox publisher are safe to run
+  # concurrently (both take rows with FOR UPDATE SKIP LOCKED), so this is a
+  # capacity choice rather than a correctness one - but a second replica
+  # buys nothing at this scale and would only make the demo noisier.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      # Kubernetes has no equivalent of Compose's depends_on, so on a fresh
+      # deploy this pod can start before the postgres Service has endpoints
+      # and DNS resolves. Flyway then fails and the JVM exits 1; Kubernetes
+      # restarts it and the second attempt succeeds, so the app recovers
+      # either way - but a deploy that shows a crash it was always going to
+      # recover from is noise. Waiting here makes first boot clean.
+      #
+      # This is a startup convenience only. If PostgreSQL disappears later,
+      # the app is not restarted for it: the liveness probe deliberately
+      # ignores dependencies (see the probes below).
+      initContainers:
+        - name: wait-for-postgres
+          # Reuses the PostgreSQL image already present for the database, so
+          # this adds no extra pull.
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER"; do
+                echo "waiting for postgres"; sleep 2;
+              done
+          envFrom:
+            - configMapRef:
+                name: taskmesh-config
+            - secretRef:
+                name: taskmesh-db
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: control-plane
+          image: taskmesh-control-plane:latest
+          # Local image built straight into the cluster's runtime; never
+          # pull, or the kubelet will look for it in a registry and fail.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: taskmesh-config
+            - secretRef:
+                name: taskmesh-db
+          # Liveness: only a wedged JVM should be restarted. This probe
+          # deliberately checks the liveness group, which excludes Redis,
+          # Kafka and even the database - a dependency outage must not turn
+          # into a restart loop, because restarting fixes none of them.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 6
+          # Readiness: should this instance receive traffic? Only if it can
+          # reach PostgreSQL, which the readiness group includes.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          # Gives the app up to 2 minutes to come up (Flyway, pools, Kafka
+          # admin) without the liveness probe killing it mid-start.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      terminationGracePeriodSeconds: 45
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  namespace: taskmesh
+spec:
+  selector:
+    app: control-plane
+  ports:
+    - port: 8080
+      targetPort: 8080

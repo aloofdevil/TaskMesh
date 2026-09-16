@@ -2,6 +2,18 @@ spring:
   application:
     name: taskmesh-control-plane
 
+  task:
+    scheduling:
+      pool:
+        # Two scheduled tasks run here: the lease reaper and the outbox
+        # publisher. Spring's default pool of 1 would make them share a
+        # thread, and the publisher blocks for up to
+        # taskmesh.outbox.send-timeout-ms waiting on Kafka - so a Kafka
+        # outage would delay lease recovery, which is the one thing that
+        # must keep running when other things are failing. Separate threads,
+        # plus one spare.
+        size: ${SCHEDULER_POOL_SIZE:3}
+
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:taskmesh}
     username: ${DB_USER:taskmesh}
@@ -25,6 +37,14 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      # Lettuce defaults to a 60s command timeout. Redis here is only a
+      # liveness cache, and WorkerLivenessCache already treats every failure
+      # as non-fatal - but without these, an unreachable Redis makes each
+      # call *block* for a minute before that handling runs, which turns a
+      # cache outage into request threads piling up and workers timing out.
+      # Failing fast is what actually makes the degradation graceful.
+      timeout: ${REDIS_TIMEOUT:1s}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
@@ -65,17 +85,38 @@ taskmesh:
 
 server:
   port: ${SERVER_PORT:8080}
+  # Let in-flight HTTP requests finish before the JVM exits, so a rolling
+  # restart does not drop a worker's completion report mid-flight.
+  shutdown: graceful
+
+spring.lifecycle.timeout-per-shutdown-phase: 20s
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # Deliberately not "*": only what probes and local inspection need.
+        include: health,info,metrics
   endpoint:
     health:
       probes:
         enabled: true
       show-details: when-authorized
+      group:
+        # Liveness answers "should Kubernetes restart this process?" - only
+        # a broken JVM should. A dependency being unreachable must never
+        # restart the control plane, or an outage in Redis or Kafka would
+        # turn into a restart loop that makes things worse.
+        liveness:
+          include: livenessState
+        # Readiness answers "should this instance receive traffic?" - which
+        # here means the authoritative store. PostgreSQL is the only
+        # dependency the API genuinely cannot serve without. Redis is a
+        # liveness cache and Kafka is fed asynchronously through the outbox,
+        # so neither is included: the control plane keeps accepting and
+        # running jobs through an outage of either.
+        readiness:
+          include: readinessState,db
   health:
     redis:
       enabled: true

@@ -33,14 +33,17 @@ public class LeaseReaperService {
     private final ReliabilityProperties properties;
     private final RetryPolicy retryPolicy;
     private final JobEventRecorder eventRecorder;
+    private final TaskMeshMetrics metrics;
 
     public LeaseReaperService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder) {
+            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder,
+            TaskMeshMetrics metrics) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.properties = properties;
         this.retryPolicy = retryPolicy;
         this.eventRecorder = eventRecorder;
+        this.metrics = metrics;
     }
 
     /**
@@ -113,15 +116,18 @@ public class LeaseReaperService {
             return 0;
         }
 
+        metrics.leaseExpired();
         Job afterRecovery = jobRepository.findById(job.getId()).orElseThrow();
         eventRecorder.recordJobEvent(
                 retryable ? JobEventType.JOB_RETRYING : JobEventType.JOB_DEAD_LETTER, afterRecovery);
 
         if (retryable) {
+            metrics.jobRetryScheduled();
             log.warn("Lease expired for job {} held by worker {} (execution {}); retrying at {}",
                     job.getId(), job.getAssignedWorkerId(), job.getCurrentExecutionId(),
                     afterRecovery.getScheduledAt());
         } else {
+            metrics.jobDeadLettered();
             log.warn("Lease expired for job {} held by worker {} after {} attempt(s); dead-lettered",
                     job.getId(), job.getAssignedWorkerId(), job.getAttemptCount());
         }

@@ -33,14 +33,17 @@ public class ExecutionService {
     private final ReliabilityProperties properties;
     private final RetryPolicy retryPolicy;
     private final JobEventRecorder eventRecorder;
+    private final TaskMeshMetrics metrics;
 
     public ExecutionService(JobRepository jobRepository, JobAttemptRepository jobAttemptRepository,
-            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder) {
+            ReliabilityProperties properties, RetryPolicy retryPolicy, JobEventRecorder eventRecorder,
+            TaskMeshMetrics metrics) {
         this.jobRepository = jobRepository;
         this.jobAttemptRepository = jobAttemptRepository;
         this.properties = properties;
         this.retryPolicy = retryPolicy;
         this.eventRecorder = eventRecorder;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -69,6 +72,7 @@ public class ExecutionService {
         // Written in this same transaction: if the commit succeeds the event
         // exists, and if it rolls back neither does.
         eventRecorder.recordJobEvent(JobEventType.JOB_COMPLETED, requireJob(jobId));
+        metrics.jobCompleted();
         log.info("Job {} completed by worker {} (execution {})", jobId, workerId, executionId);
     }
 
@@ -105,9 +109,11 @@ public class ExecutionService {
                 retryable ? JobEventType.JOB_RETRYING : JobEventType.JOB_DEAD_LETTER, afterFailure);
 
         if (retryable) {
+            metrics.jobRetryScheduled();
             log.info("Job {} failed on worker {} (attempt {}/{}); retrying at {}: {}", jobId, workerId,
                     job.getAttemptCount(), job.getMaxAttempts(), afterFailure.getScheduledAt(), failureReason);
         } else {
+            metrics.jobDeadLettered();
             log.warn("Job {} dead-lettered after {} attempt(s): {}", jobId, job.getAttemptCount(), failureReason);
         }
     }
@@ -127,6 +133,11 @@ public class ExecutionService {
         if (jobRepository.findById(jobId).isEmpty()) {
             return new JobNotFoundException(jobId);
         }
+        // Worth a WARN and a counter: a fencing rejection means a worker
+        // believed it still owned a job that had moved on without it, which
+        // is exactly the symptom of a crash-recovery or partition event.
+        metrics.staleExecutionRejected();
+        log.warn("Rejected stale execution {} for job {}: it no longer owns the job", executionId, jobId);
         return new StaleExecutionException(jobId, executionId);
     }
 }

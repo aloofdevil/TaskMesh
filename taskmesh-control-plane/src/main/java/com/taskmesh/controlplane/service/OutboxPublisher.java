@@ -45,13 +45,15 @@ public class OutboxPublisher {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
     private final OutboxProperties properties;
+    private final TaskMeshMetrics metrics;
 
     public OutboxPublisher(JobEventRepository jobEventRepository, KafkaTemplate<String, String> kafkaTemplate,
-            ObjectMapper objectMapper, OutboxProperties properties) {
+            ObjectMapper objectMapper, OutboxProperties properties, TaskMeshMetrics metrics) {
         this.jobEventRepository = jobEventRepository;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     /**
@@ -85,6 +87,7 @@ public class OutboxPublisher {
             return 0;
         }
         jobEventRepository.markPublished(published);
+        metrics.outboxPublished(published.size());
         return published.size();
     }
 
@@ -102,6 +105,7 @@ public class OutboxPublisher {
             log.warn("Interrupted publishing event {}; it stays unpublished", event.getId());
             return false;
         } catch (Exception e) {
+            metrics.outboxPublishFailed();
             log.warn("Could not publish event {} ({}) to Kafka; it stays unpublished and will be retried: {}",
                     event.getId(), event.getEventType(), e.getMessage());
             return false;

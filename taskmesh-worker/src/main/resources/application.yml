@@ -2,6 +2,19 @@ spring:
   application:
     name: taskmesh-worker
 
+  task:
+    scheduling:
+      pool:
+        # Three scheduled tasks run here: heartbeat, lease renewal and
+        # polling for work. Spring's default pool of 1 makes them share a
+        # single thread, so any one of them blocking stops the other two -
+        # and heartbeat calls the control plane, which during a Redis
+        # outage was taking a minute to answer. That starved both polling
+        # (no work claimed) and lease renewal (jobs this worker was
+        # actively running could have had their leases expire underneath
+        # them). One thread per task, plus one spare.
+        size: ${SCHEDULER_POOL_SIZE:4}
+
 server:
   port: ${SERVER_PORT:8081}
 
@@ -21,16 +34,32 @@ taskmesh:
     lease-renew-interval-ms: ${WORKER_LEASE_RENEW_INTERVAL_MS:10000}
     # Stand-in for real work.
     job-duration-ms: ${WORKER_JOB_DURATION_MS:2000}
+    # Shorter than the 30s lease, so a draining job keeps the lease it
+    # already holds, and shorter than terminationGracePeriodSeconds.
+    shutdown-drain-ms: ${WORKER_SHUTDOWN_DRAIN_MS:20000}
+
+# Graceful web shutdown so actuator requests in flight are not cut off.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 30s
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
       probes:
         enabled: true
+      group:
+        # A worker is alive as long as its JVM is; it serves no traffic, so
+        # readiness only reflects the process being up. Notably the control
+        # plane being unreachable must NOT fail either probe - the worker
+        # retries registration on its own, and restarting it would not help.
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState
 
 logging:
   level:

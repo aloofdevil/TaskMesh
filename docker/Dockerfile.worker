@@ -24,5 +24,21 @@ RUN useradd --system --create-home taskmesh
 USER taskmesh
 COPY --from=build /workspace/taskmesh-worker/target/taskmesh-worker-*.jar app.jar
 
+# networkaddress.cache.ttl: the JVM caches successful DNS lookups, and a
+# container that restarts can come back on a different IP. Without a
+# bounded TTL the client keeps reconnecting to the old address forever -
+# observed with Redis, where recovery after an outage never happened
+# because Lettuce retried an IP another container had since taken over.
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -Dnetworkaddress.cache.ttl=10"
+
 EXPOSE 8081
-ENTRYPOINT ["java", "-jar", "app.jar"]
+
+# The worker's own liveness only. It must not be reported unhealthy merely
+# because the control plane is unreachable: it retries registration by
+# itself, and restarting it would not fix the control plane.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
+    CMD curl -fsS http://localhost:8081/actuator/health/liveness || exit 1
+
+# Exec form so the JVM is PID 1 and SIGTERM reaches it directly - graceful
+# shutdown depends on that signal arriving.
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

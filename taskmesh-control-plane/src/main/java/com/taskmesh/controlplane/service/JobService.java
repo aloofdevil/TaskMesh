@@ -22,13 +22,15 @@ public class JobService {
     private final PayloadHasher payloadHasher;
     private final JobEventRecorder eventRecorder;
     private final TransactionTemplate transactionTemplate;
+    private final TaskMeshMetrics metrics;
 
     public JobService(JobRepository jobRepository, PayloadHasher payloadHasher, JobEventRecorder eventRecorder,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager, TaskMeshMetrics metrics) {
         this.jobRepository = jobRepository;
         this.payloadHasher = payloadHasher;
         this.eventRecorder = eventRecorder;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.metrics = metrics;
     }
 
     /**
@@ -99,6 +101,7 @@ public class JobService {
         return transactionTemplate.execute(status -> {
             Job saved = jobRepository.saveAndFlush(job);
             eventRecorder.recordJobEvent(JobEventType.JOB_QUEUED, saved);
+            metrics.jobSubmitted();
             return saved;
         });
     }
@@ -120,6 +123,7 @@ public class JobService {
         if (updated == 1) {
             Job cancelled = jobRepository.findById(id).orElseThrow(() -> new JobNotFoundException(id));
             eventRecorder.recordJobEvent(JobEventType.JOB_CANCELLED, cancelled);
+            metrics.jobCancelled();
             return cancelled;
         }
         Job existing = jobRepository.findById(id).orElseThrow(() -> new JobNotFoundException(id));
