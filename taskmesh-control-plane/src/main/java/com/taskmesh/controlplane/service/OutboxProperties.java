@@ -18,6 +18,7 @@ public record OutboxProperties(
         boolean publisherEnabled,
         long pollIntervalMs,
         int batchSize,
+        int publisherConcurrency,
         long sendTimeoutMs,
         String jobEventsTopic,
         String workerEventsTopic) {

@@ -76,6 +76,11 @@ services:
       # before Day 11 used. Exposed here only so the same image can be
       # measured at several pool sizes without rebuilding it.
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL_SIZE:-10}
+      # Pass-through for the Day 15 outbox-publisher concurrency experiment.
+      # The application.yml placeholder is resolved inside the container, so
+      # without this line the variable set on the host never reaches it.
+      # 1 is the application default, so leaving it unset changes nothing.
+      OUTBOX_PUBLISHER_CONCURRENCY: ${OUTBOX_PUBLISHER_CONCURRENCY:-1}
       # Pass-through for the Day 13 CPU profiling run. The default below is
       # byte-for-byte the value baked into docker/Dockerfile.control-plane,
       # so leaving it unset changes nothing; it exists so a Flight Recorder

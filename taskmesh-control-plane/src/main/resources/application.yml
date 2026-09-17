@@ -87,6 +87,11 @@ taskmesh:
     publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
     poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
     batch-size: ${OUTBOX_BATCH_SIZE:100}
+    # How many publishing passes run at once. 1 keeps the original
+    # behaviour exactly: a single pass per tick on the scheduler thread.
+    # Above 1, passes take disjoint batches via FOR UPDATE SKIP LOCKED, and
+    # global id-ordering of published events is traded for throughput.
+    publisher-concurrency: ${OUTBOX_PUBLISHER_CONCURRENCY:1}
     send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:5000}
     job-events-topic: ${JOB_EVENTS_TOPIC:taskmesh.job-events}
     worker-events-topic: ${WORKER_EVENTS_TOPIC:taskmesh.worker-events}
