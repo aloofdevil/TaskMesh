@@ -28,6 +28,22 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+        type:
+          # Bind Instant as OffsetDateTime rather than as java.sql.Timestamp
+          # plus a UTC Calendar.
+          #
+          # Both write the same absolute instant to a TIMESTAMPTZ column, but
+          # the Calendar path calls java.util.TimeZone.getTimeZone(String) on
+          # every bind and every extract, and that method is *static
+          # synchronized* in the JDK. Under load every request thread
+          # serialises on one JVM-wide lock: Day 13 profiling attributed 70%
+          # of all monitor-enter events to it, with 97.7% of the blocking on
+          # HTTP request threads.
+          #
+          # TimestampSemanticsContract pins both bindings against the values
+          # PostgreSQL actually stores, so this cannot silently change what a
+          # timestamp means.
+          preferred_instant_jdbc_type: TIMESTAMP_WITH_TIMEZONE
 
   flyway:
     enabled: true

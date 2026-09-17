@@ -12,6 +12,9 @@ COPY mvnw pom.xml ./
 COPY taskmesh-common/pom.xml taskmesh-common/pom.xml
 COPY taskmesh-control-plane/pom.xml taskmesh-control-plane/pom.xml
 COPY taskmesh-worker/pom.xml taskmesh-worker/pom.xml
+# The reactor root lists taskmesh-loadgen, so its pom must be present for
+# dependency resolution even though this image never builds that module.
+COPY taskmesh-loadgen/pom.xml taskmesh-loadgen/pom.xml
 RUN chmod +x mvnw && \
     ./mvnw -q -B -pl taskmesh-control-plane -am dependency:go-offline
 
