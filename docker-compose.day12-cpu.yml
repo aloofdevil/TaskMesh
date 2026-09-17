@@ -1,0 +1,18 @@
+# Day 12 resource-isolation experiment overlay. Opt-in only:
+#   docker compose -f docker-compose.yml -f docker-compose.day12-cpu.yml up -d
+#
+# Never loaded by a plain `docker compose up`, so the default stack keeps the
+# unconstrained allocation every earlier benchmark used. This exists so the
+# Day 12 CPU-budget measurements are reproducible - it allocates host CPU to
+# containers and does not change any PostgreSQL, Redis or Kafka setting.
+services:
+  postgres:
+    cpus: ${PG_CPUS:-16}
+    cpuset: ${STACK_CPUSET:-0-15}
+  redis:
+    cpuset: ${STACK_CPUSET:-0-15}
+  kafka:
+    cpuset: ${STACK_CPUSET:-0-15}
+  control-plane:
+    cpus: ${CP_CPUS:-16}
+    cpuset: ${STACK_CPUSET:-0-15}
