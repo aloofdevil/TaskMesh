@@ -95,6 +95,11 @@ taskmesh:
     send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:5000}
     job-events-topic: ${JOB_EVENTS_TOPIC:taskmesh.job-events}
     worker-events-topic: ${WORKER_EVENTS_TOPIC:taskmesh.worker-events}
+    # Partitions for both event topics. 3 is what the topics have always had;
+    # exposed as a setting purely so the Day 16 investigation can vary it as a
+    # controlled variable. Only applied when a topic is first created - Kafka
+    # cannot reduce an existing topic's partition count.
+    topic-partitions: ${OUTBOX_TOPIC_PARTITIONS:3}
 
   reliability:
     # 30s lease against the worker's 10s renewal interval: three chances to

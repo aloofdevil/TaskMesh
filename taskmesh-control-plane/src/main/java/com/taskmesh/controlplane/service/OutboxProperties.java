@@ -21,5 +21,6 @@ public record OutboxProperties(
         int publisherConcurrency,
         long sendTimeoutMs,
         String jobEventsTopic,
-        String workerEventsTopic) {
+        String workerEventsTopic,
+        int topicPartitions) {
 }

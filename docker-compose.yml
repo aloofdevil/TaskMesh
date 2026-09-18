@@ -81,6 +81,12 @@ services:
       # without this line the variable set on the host never reaches it.
       # 1 is the application default, so leaving it unset changes nothing.
       OUTBOX_PUBLISHER_CONCURRENCY: ${OUTBOX_PUBLISHER_CONCURRENCY:-1}
+      # Pass-through for the Day 16 partition investigation; 3 is the value
+      # the topics have always been created with.
+      OUTBOX_TOPIC_PARTITIONS: ${OUTBOX_TOPIC_PARTITIONS:-3}
+      # Pass-through for the Day 18 poll-interval experiment. 500 is the
+      # application default, so leaving it unset changes nothing.
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
       # Pass-through for the Day 13 CPU profiling run. The default below is
       # byte-for-byte the value baked into docker/Dockerfile.control-plane,
       # so leaving it unset changes nothing; it exists so a Flight Recorder

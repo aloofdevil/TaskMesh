@@ -21,13 +21,17 @@ import com.taskmesh.controlplane.service.OutboxProperties;
 @Configuration(proxyBeanMethods = false)
 public class KafkaTopicsConfig {
 
-    private static final int PARTITIONS = 3;
+    /**
+     * Single-broker Compose stack, so one replica is the only option. With
+     * replication factor 1 the topic's min.insync.replicas is 1, which means
+     * the producer's acks=all is satisfied by the leader alone.
+     */
     private static final short REPLICATION_FACTOR = 1;
 
     @Bean
     NewTopic jobEventsTopic(OutboxProperties properties) {
         return TopicBuilder.name(properties.jobEventsTopic())
-                .partitions(PARTITIONS)
+                .partitions(properties.topicPartitions())
                 .replicas(REPLICATION_FACTOR)
                 .build();
     }
@@ -35,7 +39,7 @@ public class KafkaTopicsConfig {
     @Bean
     NewTopic workerEventsTopic(OutboxProperties properties) {
         return TopicBuilder.name(properties.workerEventsTopic())
-                .partitions(PARTITIONS)
+                .partitions(properties.topicPartitions())
                 .replicas(REPLICATION_FACTOR)
                 .build();
     }
