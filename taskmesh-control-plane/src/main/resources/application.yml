@@ -93,6 +93,19 @@ taskmesh:
     # global id-ordering of published events is traded for throughput.
     publisher-concurrency: ${OUTBOX_PUBLISHER_CONCURRENCY:1}
     send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:5000}
+    # false keeps the original send/wait shape exactly: one event sent, its
+    # acknowledgement awaited, then the next. true submits the whole batch to
+    # the producer before collecting acknowledgements, so records can share a
+    # producer batch instead of each paying its own linger.ms wait.
+    #
+    # Default false because this is an experiment and because the two modes do
+    # not have identical failure semantics: the sequential path stops at the
+    # first failure, so what it marks published is always a prefix of the batch
+    # in id order, while the batched path attempts every event and can publish a
+    # later one while an earlier one failed. Both mark an event published only
+    # if its own send was acknowledged, so delivery stays at-least-once either
+    # way. See docs/day20-async-outbox-send-experiment.md.
+    async-sends: ${OUTBOX_ASYNC_SENDS:false}
     job-events-topic: ${JOB_EVENTS_TOPIC:taskmesh.job-events}
     worker-events-topic: ${WORKER_EVENTS_TOPIC:taskmesh.worker-events}
     # Partitions for both event topics. 3 is what the topics have always had;

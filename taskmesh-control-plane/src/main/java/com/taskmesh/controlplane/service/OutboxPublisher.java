@@ -4,11 +4,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,6 +49,21 @@ public class OutboxPublisher {
     private final OutboxProperties properties;
     private final TaskMeshMetrics metrics;
 
+    /**
+     * Day 19 instrumentation only. Phase timings of the pass this thread just
+     * ran, in nanoseconds: {@code [claim, send, mark]}. Each pass runs on its
+     * own pool thread and the scheduler reads this on that same thread
+     * immediately after {@link #publishPending()} returns, so there is no
+     * sharing between passes. It exists so the scheduler can log one
+     * aggregated decomposition per tick without {@code publishPending()}
+     * changing the value it returns.
+     */
+    private final ThreadLocal<long[]> lastPassPhases = ThreadLocal.withInitial(() -> new long[3]);
+
+    long[] lastPassPhases() {
+        return lastPassPhases.get();
+    }
+
     public OutboxPublisher(JobEventRepository jobEventRepository, KafkaTemplate<String, String> kafkaTemplate,
             ObjectMapper objectMapper, OutboxProperties properties, TaskMeshMetrics metrics) {
         this.jobEventRepository = jobEventRepository;
@@ -67,28 +84,136 @@ public class OutboxPublisher {
      */
     @Transactional
     public int publishPending() {
+        // Day 19 instrumentation. Every timer here is recorded only for a
+        // pass that actually claimed rows. That is deliberate: a saturated
+        // drain is followed by many passes that find an empty outbox and
+        // return in microseconds, and Day 18 showed what including those
+        // does to a mean - hikaricp.connections.usage fell from 355ms to
+        // 83ms purely because faster polling added empty passes, which
+        // looks like passes getting faster and is not. Timing only working
+        // passes keeps these four meters comparable across concurrencies.
+        long[] phases = lastPassPhases.get();
+        phases[0] = 0;
+        phases[1] = 0;
+        phases[2] = 0;
+
+        long passStart = System.nanoTime();
         List<JobEvent> pending = jobEventRepository.lockUnpublishedBatch(properties.batchSize());
+        long claimNanos = System.nanoTime() - passStart;
         if (pending.isEmpty()) {
             return 0;
         }
+        metrics.recordOutboxClaim(claimNanos);
+        phases[0] = claimNanos;
 
+        long sendStart = System.nanoTime();
+        List<Long> published = properties.asyncSends() ? sendBatched(pending) : sendSequentially(pending);
+        long sendNanos = System.nanoTime() - sendStart;
+        metrics.recordOutboxSend(sendNanos);
+        phases[1] = sendNanos;
+
+        if (published.isEmpty()) {
+            metrics.recordOutboxPass(System.nanoTime() - passStart);
+            return 0;
+        }
+        long markStart = System.nanoTime();
+        jobEventRepository.markPublished(published);
+        long markNanos = System.nanoTime() - markStart;
+        metrics.recordOutboxMark(markNanos);
+        phases[2] = markNanos;
+        metrics.outboxPublished(published.size());
+        metrics.recordOutboxPass(System.nanoTime() - passStart);
+        return published.size();
+    }
+
+    /**
+     * The original behaviour, and still the default: send one event, wait for
+     * its acknowledgement, then send the next.
+     * <p>
+     * Stopping at the first failure is deliberate. Kafka is likely down, and
+     * continuing would just pile up timeouts; it also means the events this
+     * pass marks published are always a <em>prefix</em> of the batch in id
+     * order, so no event is published while an earlier one in the same batch
+     * is not.
+     */
+    private List<Long> sendSequentially(List<JobEvent> pending) {
         List<Long> published = new ArrayList<>();
         for (JobEvent event : pending) {
             if (!send(event)) {
-                // Stop at the first failure: Kafka is likely down, and
-                // continuing would just pile up timeouts. Preserving order
-                // also means a later event never overtakes an earlier one.
                 break;
             }
             published.add(event.getId());
         }
+        return published;
+    }
 
-        if (published.isEmpty()) {
-            return 0;
+    /**
+     * Day 20: submit the whole batch to the producer first, then collect the
+     * acknowledgements.
+     * <p>
+     * The reason is measured, not assumed. Day 19 found that 87-96% of a
+     * publisher tick was this loop, and that the per-event cost matched Kafka's
+     * own {@code record.queue.time.avg + request.latency.avg} to within 3% -
+     * i.e. every event was paying its own {@code linger.ms} wait because the
+     * pass blocked before the next record could join a batch. Submitting first
+     * lets records accumulate into the same producer batch.
+     * <p>
+     * <strong>What is preserved:</strong> an event is marked published only if
+     * its own send was acknowledged, so a failure still leaves its row
+     * {@code published_at IS NULL} for a later pass. Delivery stays
+     * at-least-once.
+     * <p>
+     * <strong>What changes:</strong> the prefix property above is lost. Every
+     * event in the batch is attempted, so a later event can be acknowledged and
+     * marked published while an earlier one failed and is retried on a
+     * subsequent pass. Within a single pass, publication of one aggregate's
+     * events can therefore be reordered across a failure - something the
+     * sequential path could not do. Note the system already had no global
+     * ordering guarantee whenever {@code publisher-concurrency > 1}, since
+     * concurrent passes take disjoint batches and race (see Day 15); this
+     * narrows the guarantee that remained inside a single pass.
+     */
+    private List<Long> sendBatched(List<JobEvent> pending) {
+        List<CompletableFuture<SendResult<String, String>>> futures = new ArrayList<>(pending.size());
+        List<JobEvent> submitted = new ArrayList<>(pending.size());
+        for (JobEvent event : pending) {
+            try {
+                String topic = topicFor(event.getEventType());
+                String message = objectMapper.writeValueAsString(envelope(event));
+                futures.add(kafkaTemplate.send(topic, event.getAggregateId(), message));
+                submitted.add(event);
+            } catch (Exception e) {
+                // Serialisation, buffer exhaustion, or a record the producer
+                // rejects outright: this event never went in flight, so it is
+                // simply left unpublished rather than being waited on.
+                metrics.outboxPublishFailed();
+                log.warn("Could not submit event {} ({}) to Kafka; it stays unpublished and will be retried: {}",
+                        event.getId(), event.getEventType(), e.getMessage());
+            }
         }
-        jobEventRepository.markPublished(published);
-        metrics.outboxPublished(published.size());
-        return published.size();
+
+        // One deadline for the whole batch rather than the full send timeout
+        // per event: the sends were all submitted at once, so they complete at
+        // roughly the same time, and a per-event timeout would let one pass
+        // block for batchSize x sendTimeoutMs in the worst case.
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(properties.sendTimeoutMs());
+        List<Long> published = new ArrayList<>(submitted.size());
+        for (int i = 0; i < futures.size(); i++) {
+            JobEvent event = submitted.get(i);
+            try {
+                futures.get(i).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                published.add(event.getId());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted publishing event {}; it stays unpublished", event.getId());
+                return published;
+            } catch (Exception e) {
+                metrics.outboxPublishFailed();
+                log.warn("Could not publish event {} ({}) to Kafka; it stays unpublished and will be retried: {}",
+                        event.getId(), event.getEventType(), e.getMessage());
+            }
+        }
+        return published;
     }
 
     private boolean send(JobEvent event) {

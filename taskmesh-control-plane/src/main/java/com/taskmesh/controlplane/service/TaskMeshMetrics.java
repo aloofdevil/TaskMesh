@@ -38,6 +38,10 @@ public class TaskMeshMetrics {
     private final Counter outboxPublished;
     private final Counter outboxPublishFailures;
     private final Timer claimLatency;
+    private final Timer outboxClaim;
+    private final Timer outboxSend;
+    private final Timer outboxMark;
+    private final Timer outboxPass;
 
     public TaskMeshMetrics(MeterRegistry registry, WorkerRepository workerRepository,
             JobEventRepository jobEventRepository) {
@@ -68,6 +72,21 @@ public class TaskMeshMetrics {
         this.claimLatency = Timer.builder("taskmesh.jobs.claim")
                 .description("Time to serve a worker's claim request, whether or not work was available")
                 .register(registry);
+
+        // Day 19: the three phases inside one outbox publishing pass, so the
+        // publisher tick can be decomposed without per-event logging. These
+        // publish percentiles because the question they exist to answer is
+        // about the tail (the slowest pass sets the tick), and a p95 or max
+        // must never be derived from a mean. Recorded once per pass, not
+        // once per event.
+        this.outboxClaim = outboxTimer(registry, "taskmesh.outbox.claim",
+                "Time to lock one unpublished batch (SELECT ... FOR UPDATE SKIP LOCKED)");
+        this.outboxSend = outboxTimer(registry, "taskmesh.outbox.send",
+                "Time for one pass to send its whole batch to Kafka and await acknowledgements");
+        this.outboxMark = outboxTimer(registry, "taskmesh.outbox.mark",
+                "Time to mark one batch published");
+        this.outboxPass = outboxTimer(registry, "taskmesh.outbox.pass",
+                "Total time for one publishing pass, claim through mark");
 
         // Gauges read current state on scrape rather than being pushed to,
         // because they describe a level rather than a rate.
@@ -121,5 +140,27 @@ public class TaskMeshMetrics {
 
     public void recordClaimLatency(long nanos) {
         claimLatency.record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    private static Timer outboxTimer(MeterRegistry registry, String name, String description) {
+        return Timer.builder(name).description(description)
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry);
+    }
+
+    public void recordOutboxClaim(long nanos) {
+        outboxClaim.record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void recordOutboxSend(long nanos) {
+        outboxSend.record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void recordOutboxMark(long nanos) {
+        outboxMark.record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void recordOutboxPass(long nanos) {
+        outboxPass.record(nanos, TimeUnit.NANOSECONDS);
     }
 }

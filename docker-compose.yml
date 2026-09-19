@@ -87,6 +87,10 @@ services:
       # Pass-through for the Day 18 poll-interval experiment. 500 is the
       # application default, so leaving it unset changes nothing.
       OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-500}
+      # Pass-through for the Day 20 async-send experiment. false is the
+      # application default, so leaving it unset preserves the original
+      # sequential send/wait behaviour.
+      OUTBOX_ASYNC_SENDS: ${OUTBOX_ASYNC_SENDS:-false}
       # Pass-through for the Day 13 CPU profiling run. The default below is
       # byte-for-byte the value baked into docker/Dockerfile.control-plane,
       # so leaving it unset changes nothing; it exists so a Flight Recorder
