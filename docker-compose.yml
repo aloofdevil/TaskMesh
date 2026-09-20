@@ -91,6 +91,9 @@ services:
       # application default, so leaving it unset preserves the original
       # sequential send/wait behaviour.
       OUTBOX_ASYNC_SENDS: ${OUTBOX_ASYNC_SENDS:-false}
+      # Pass-through for the Day 23 key-aware sharding prototype. false is the
+      # application default, so leaving it unset changes nothing.
+      OUTBOX_KEY_AWARE_SHARDING: ${OUTBOX_KEY_AWARE_SHARDING:-false}
       # Pass-through for the Day 13 CPU profiling run. The default below is
       # byte-for-byte the value baked into docker/Dockerfile.control-plane,
       # so leaving it unset changes nothing; it exists so a Flight Recorder

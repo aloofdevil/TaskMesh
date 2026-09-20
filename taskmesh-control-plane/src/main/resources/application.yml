@@ -106,6 +106,18 @@ taskmesh:
     # if its own send was acknowledged, so delivery stays at-least-once either
     # way. See docs/day20-async-outbox-send-experiment.md.
     async-sends: ${OUTBOX_ASYNC_SENDS:false}
+    # Day 23 prototype. false keeps the original claim: any publishing pass may
+    # take any unpublished row, ordered by id. true restricts each pass to the
+    # rows whose aggregate_id hashes to its own shard, so two concurrent passes
+    # can never hold events for the same key - which is where Days 21-22
+    # measured per-key ordering being lost.
+    #
+    # Default false because this is an experiment: it is single-instance only
+    # (two control planes would each run a full set of shards and the boundary
+    # would not hold), it has no failure-recovery or rebalancing, and it makes
+    # throughput depend on how evenly keys hash across shards. See
+    # docs/day23-key-aware-publisher-experiment.md.
+    key-aware-sharding: ${OUTBOX_KEY_AWARE_SHARDING:false}
     job-events-topic: ${JOB_EVENTS_TOPIC:taskmesh.job-events}
     worker-events-topic: ${WORKER_EVENTS_TOPIC:taskmesh.worker-events}
     # Partitions for both event topics. 3 is what the topics have always had;

@@ -60,15 +60,20 @@ public class OutboxPublisherScheduler {
     private final OutboxPublisher publisher;
     private final int concurrency;
 
+    /** Day 23 prototype switch; false keeps the original claim path. */
+    private final boolean keyAwareSharding;
+
     /** Null at concurrency 1, so the default configuration allocates no threads at all. */
     private final ExecutorService executor;
 
     public OutboxPublisherScheduler(OutboxPublisher publisher, OutboxProperties properties) {
         this.publisher = publisher;
         this.concurrency = Math.max(1, properties.publisherConcurrency());
+        this.keyAwareSharding = properties.keyAwareSharding();
         this.executor = this.concurrency == 1 ? null : createExecutor(this.concurrency);
         if (this.concurrency > 1) {
-            log.info("Outbox publisher running with concurrency {}", this.concurrency);
+            log.info("Outbox publisher running with concurrency {}{}", this.concurrency,
+                    this.keyAwareSharding ? " (key-aware sharding)" : "");
         }
     }
 
@@ -112,13 +117,18 @@ public class OutboxPublisherScheduler {
     private int publishConcurrently(long tickStart) {
         List<Future<PassResult>> futures = new ArrayList<>(concurrency);
         for (int i = 0; i < concurrency; i++) {
-            // Each pass runs on its own thread, so it gets its own
-            // transaction and its own connection rather than sharing one.
-            // The lambda only brackets the same call with two nanoTime
-            // reads; it does not change what the pass does.
+            // Day 23 experiment: task i owns shard i of `concurrency`. The
+            // mapping is 1:1 and fixed for the tick, which is what makes the
+            // ownership boundary hold - each shard has exactly one pass in
+            // flight, and the barrier below means a tick's passes all finish
+            // before the next tick starts one. Off by default, in which case
+            // this is the original unsharded claim.
+            final int shard = i;
             futures.add(executor.submit(() -> {
                 long passStart = System.nanoTime();
-                int n = publisher.publishPending();
+                int n = keyAwareSharding
+                        ? publisher.publishShard(shard, concurrency)
+                        : publisher.publishPending();
                 long passEnd = System.nanoTime();
                 long[] phases = publisher.lastPassPhases();
                 return new PassResult(n, passStart, passEnd, phases[0], phases[1], phases[2]);

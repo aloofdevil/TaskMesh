@@ -17,6 +17,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                         published is decided per event either way. See
  *                         docs/day20-async-outbox-send-experiment.md for the
  *                         failure-semantics difference this introduces.
+ * @param keyAwareSharding Day 23 experiment. false (the default) keeps the original
+ *                         claim: any pass may take any unpublished row, ordered by id.
+ *                         true restricts each publishing pass to the rows whose
+ *                         aggregate_id hashes to its own shard, so two concurrent
+ *                         passes can never hold events for the same key. Prototype
+ *                         only - see docs/day23-key-aware-publisher-experiment.md.
  * @param jobEventsTopic   topic for job lifecycle events
  * @param workerEventsTopic topic for worker lifecycle events
  */
@@ -28,6 +34,7 @@ public record OutboxProperties(
         int publisherConcurrency,
         long sendTimeoutMs,
         boolean asyncSends,
+        boolean keyAwareSharding,
         String jobEventsTopic,
         String workerEventsTopic,
         int topicPartitions) {

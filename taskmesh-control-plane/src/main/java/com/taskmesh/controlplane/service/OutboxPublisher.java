@@ -82,8 +82,27 @@ public class OutboxPublisher {
      * pass is one transaction holding row locks on the batch, which keeps
      * two control-plane instances from publishing the same rows.
      */
+    /**
+     * Day 23 experiment. Publishes one batch restricted to an ownership shard:
+     * only events whose key hashes to {@code shard} of {@code shards}.
+     * <p>
+     * Identical to {@link #publishPending()} in every respect except which rows
+     * the claim can see. Called only when
+     * {@code taskmesh.outbox.key-aware-sharding} is on, which is off by default,
+     * so the shipped path is untouched.
+     */
+    @Transactional
+    public int publishShard(int shard, int shards) {
+        return publish(shard, shards);
+    }
+
     @Transactional
     public int publishPending() {
+        return publish(-1, -1);
+    }
+
+    /** {@code shards <= 0} means the original unsharded claim. */
+    private int publish(int shard, int shards) {
         // Day 19 instrumentation. Every timer here is recorded only for a
         // pass that actually claimed rows. That is deliberate: a saturated
         // drain is followed by many passes that find an empty outbox and
@@ -98,7 +117,9 @@ public class OutboxPublisher {
         phases[2] = 0;
 
         long passStart = System.nanoTime();
-        List<JobEvent> pending = jobEventRepository.lockUnpublishedBatch(properties.batchSize());
+        List<JobEvent> pending = shards > 0
+                ? jobEventRepository.lockUnpublishedBatchForShard(properties.batchSize(), shards, shard)
+                : jobEventRepository.lockUnpublishedBatch(properties.batchSize());
         long claimNanos = System.nanoTime() - passStart;
         if (pending.isEmpty()) {
             return 0;
