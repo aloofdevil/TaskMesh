@@ -43,6 +43,14 @@ public class OutboxPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
 
+    /**
+     * Day 24 instrumentation. Identifies this JVM in the per-pass claim log, so
+     * a multi-instance run can be attributed to instances after the fact. Fresh
+     * per process start; deliberately not persisted anywhere, since nothing in
+     * the production data model carries instance identity.
+     */
+    private static final String INSTANCE_ID = java.util.UUID.randomUUID().toString().substring(0, 8);
+
     private final JobEventRepository jobEventRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -74,15 +82,6 @@ public class OutboxPublisher {
     }
 
     /**
-     * Publishes one batch and returns how many events were confirmed.
-     * <p>
-     * Events are marked published only after Kafka acknowledges them, and
-     * only those that were acknowledged - so a partial failure leaves the
-     * rest unpublished for a later pass rather than losing them. The whole
-     * pass is one transaction holding row locks on the batch, which keeps
-     * two control-plane instances from publishing the same rows.
-     */
-    /**
      * Day 23 experiment. Publishes one batch restricted to an ownership shard:
      * only events whose key hashes to {@code shard} of {@code shards}.
      * <p>
@@ -96,6 +95,15 @@ public class OutboxPublisher {
         return publish(shard, shards);
     }
 
+    /**
+     * Publishes one batch and returns how many events were confirmed.
+     * <p>
+     * Events are marked published only after Kafka acknowledges them, and
+     * only those that were acknowledged - so a partial failure leaves the
+     * rest unpublished for a later pass rather than losing them. The whole
+     * pass is one transaction holding row locks on the batch, which keeps
+     * two control-plane instances from publishing the same rows.
+     */
     @Transactional
     public int publishPending() {
         return publish(-1, -1);
@@ -126,6 +134,23 @@ public class OutboxPublisher {
         }
         metrics.recordOutboxClaim(claimNanos);
         phases[0] = claimNanos;
+
+        // Day 24 instrumentation, DEBUG-gated and sharded-claims only. One
+        // aggregated record per pass - never per event - carrying who claimed
+        // what: which JVM, which shard, and the exact event ids. Nothing else
+        // in the system records instance identity, and without it there is no
+        // way to tell whether two control planes processed the same shard.
+        if (shards > 0 && log.isDebugEnabled()) {
+            StringBuilder ids = new StringBuilder(pending.size() * 6);
+            for (JobEvent event : pending) {
+                if (ids.length() > 0) {
+                    ids.append(',');
+                }
+                ids.append(event.getId());
+            }
+            log.debug("outbox-claim instance={} shard={}/{} count={} ids={}",
+                    INSTANCE_ID, shard, shards, pending.size(), ids);
+        }
 
         long sendStart = System.nanoTime();
         List<Long> published = properties.asyncSends() ? sendBatched(pending) : sendSequentially(pending);
